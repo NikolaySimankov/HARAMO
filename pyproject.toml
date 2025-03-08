@@ -1,0 +1,48 @@
+[project]
+name = "haramo"
+version = "0.1.0"
+description = "Holistic AutoML-driven Robust Pipeline for Applied Multi-Omics"
+authors = [
+    {name = "NikolaySimankov",email = "77026145+NikolaySimankov@users.noreply.github.com"}
+]
+readme = "README.md"
+license = "MIT"
+
+[tool.poetry.dependencies]
+python = "^3.12.8"
+Boruta = "^0.3.0"
+numpy = "^2.2.2"
+optuna = "^4.2.0"
+pandas = "^2.2.3"
+plotly = "^6.0.0"
+scikit-learn = "^1.6.1"
+scipy = "^1.15.1"
+
+[tool.poetry.group.dev.dependencies]
+ruff = "^0.7.2"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.ruff]
+line-length = 99
+target-version = "py312"
+fix = true
+unsafe-fixes = false
+
+[tool.ruff.lint.isort]
+lines-between-types = 1
+relative-imports-order = "closest-to-furthest"
+section-order = ["future", "third-party", "first-party", "local-folder"]
+
+[tool.ruff.format]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "N", "B", "A", "C", "T", "Q", "RUF"]
+ignore = [
+    "D100", "D101", "D102", "D103", "D104",
+    "D401",
+    "F541",
+    "N803", "N806"
+]

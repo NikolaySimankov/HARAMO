@@ -1,0 +1,456 @@
+###########
+# Imports #
+###########
+
+import itertools
+from typing import Union
+
+from lightgbm import LGBMClassifier
+
+# from xgboost import XGBClassifier
+
+from sklearn.svm import SVC, NuSVC
+from sklearn.linear_model import SGDClassifier, LogisticRegression, RidgeClassifier
+from sklearn.neural_network import MLPClassifier
+from sklearn.ensemble import RandomForestClassifier, ExtraTreesClassifier
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+
+from sklearn.pipeline import Pipeline
+
+from ..utils import instantiate_scaler, filter_args
+from ..feature_selection import instantiate_feature_selector
+
+from optuna import Trial
+
+#############
+# Functions #
+#############
+
+
+def instantiate_RBFSVM_Classifier(
+    trial: Trial, hyperparameters: str = "optimize", **kwargs
+):
+    if hyperparameters == "optimize":
+        params = {
+            "C": trial.suggest_float("C", 1e-4, 1e1),
+            "gamma": trial.suggest_float("gamma", 1e-4, 1e1),
+        }
+    elif hyperparameters == "default":
+        params = {}
+    else:
+        raise ValueError("hyperparameters must be 'optimize' or 'default'")
+    params.update(filter_args(SVC, **kwargs))
+    estimator = SVC(kernel="rbf", **params)
+    return estimator
+
+
+def instantiate_LSVM_Classifier(
+    trial: Trial, hyperparameters: str = "optimize", **kwargs
+):
+    if hyperparameters == "optimize":
+        params = {
+            "gamma": trial.suggest_float("gamma", 1e-4, 1e1),
+            "degree": trial.suggest_int("degree", 2, 4),
+            "kernel": trial.suggest_categorical("kernel", ["linear", "poly"]),
+        }
+    elif hyperparameters == "default":
+        params = {}
+    else:
+        raise ValueError("hyperparameters must be 'optimize' or 'default'")
+    params.update(filter_args(SVC, **kwargs))
+    estimator = SVC(**params)
+    return estimator
+
+
+def instantiate_NuLSVM_Classifier(
+    trial: Trial, hyperparameters: str = "optimize", **kwargs
+):
+    if hyperparameters == "optimize":
+        params = {
+            "nu": trial.suggest_float("C", 1e-2, 1),
+            "gamma": trial.suggest_float("gamma", 1e-4, 1e1),
+            "degree": trial.suggest_int("degree", 2, 4),
+            "kernel": trial.suggest_categorical("kernel", ["linear", "poly"]),
+        }
+    elif hyperparameters == "default":
+        params = {}
+    else:
+        raise ValueError("hyperparameters must be 'optimize' or 'default'")
+    params.update(filter_args(NuSVC, **kwargs))
+    estimator = NuSVC(**params)
+    return estimator
+
+
+def instantiate_NuRBFSVM_Classifier(
+    trial: Trial, hyperparameters: str = "optimize", **kwargs
+):
+    if hyperparameters == "optimize":
+        params = {
+            "nu": trial.suggest_float("nu", 1e-4, 1e1),
+            "gamma": trial.suggest_float("gamma", 1e-4, 1e1),
+        }
+    elif hyperparameters == "default":
+        params = {}
+    else:
+        raise ValueError("hyperparameters must be 'optimize' or 'default'")
+    params.update(filter_args(NuSVC, **kwargs))
+    estimator = NuSVC(kernel="rbf", **params)
+    return estimator
+
+
+def instantiate_SGD_Classifier(
+    trial: Trial, hyperparameters: str = "optimize", **kwargs
+):
+    if hyperparameters == "optimize":
+        params = {
+            "alpha": trial.suggest_float("SGD_alpha", 1e-4, 1e1),
+        }
+    elif hyperparameters == "default":
+        params = {}
+    else:
+        raise ValueError("hyperparameters must be 'optimize' or 'default'")
+    params.update(filter_args(SGDClassifier, **kwargs))
+    estimator = SGDClassifier(**params)
+    return estimator
+
+
+def instantiate_MLP_Classifier(
+    trial: Trial, hyperparameters: str = "optimize", **kwargs
+):
+    if hyperparameters == "optimize":
+        params = {
+            "activation": trial.suggest_categorical(
+                "activation", ["identity", "logistic", "tanh", "relu"]
+            ),
+            "solver": trial.suggest_categorical("MLP_solver", ["lbfgs", "sgd", "adam"]),
+            "hidden_layer_sizes": trial.suggest_categorical(
+                "hidden_layer_sizes",
+                list(itertools.product([50, 100, 200], repeat=2))
+                + list(itertools.product([50, 100, 200], repeat=3)),
+            ),
+            "alpha": trial.suggest_float("MLP_alpha", 1e-4, 1e1),
+        }
+    elif hyperparameters == "default":
+        params = {}
+    else:
+        raise ValueError("hyperparameters must be 'optimize' or 'default'")
+    params.update(filter_args(MLPClassifier, **kwargs))
+    estimator = MLPClassifier(early_stopping=True, learning_rate="adaptive", **params)
+    return estimator
+
+
+def instantiate_RF_Classifier(
+    trial: Trial, hyperparameters: str = "optimize", **kwargs
+):
+    if hyperparameters == "optimize":
+        params = {
+            "n_estimators": trial.suggest_int("RF_n_estimators", 2**7, 2**10),
+            "max_leaf_nodes": trial.suggest_int("max_leaf_nodes", 5, 50),
+        }
+    elif hyperparameters == "default":
+        params = {}
+    else:
+        raise ValueError("hyperparameters must be 'optimize' or 'default'")
+    params.update(filter_args(RandomForestClassifier, **kwargs))
+    estimator = RandomForestClassifier(
+        min_samples_split=6, min_samples_leaf=3, **params
+    )
+    return estimator
+
+
+def instantiate_ET_Classifier(
+    trial: Trial, hyperparameters: str = "optimize", **kwargs
+):
+    if hyperparameters == "optimize":
+        params = {
+            "n_estimators": trial.suggest_int("ET_n_estimators", 2**7, 2**10),
+            "max_leaf_nodes": trial.suggest_int("max_leaf_nodes", 5, 50),
+        }
+    elif hyperparameters == "default":
+        params = {}
+    else:
+        raise ValueError("hyperparameters must be 'optimize' or 'default'")
+    params.update(filter_args(ExtraTreesClassifier, **kwargs))
+    estimator = ExtraTreesClassifier(min_samples_split=6, min_samples_leaf=3, **params)
+    return estimator
+
+
+def instantiate_LGBM_Classifier(
+    trial: Trial, hyperparameters: str = "optimize", **kwargs
+):
+    if hyperparameters == "optimize":
+        params = {
+            "num_leaves": trial.suggest_int("num_leaves", 5, 50),
+            "learning_rate": trial.suggest_float("learning_rate", 1e-3, 1e-0),
+            "n_estimators": trial.suggest_int("n_estimators", 2**7, 2**10),
+            "reg_alpha": trial.suggest_float("reg_alpha", 1e-3, 1e1),
+            "reg_lambda": trial.suggest_float("reg_lambda", 1e-3, 1e1),
+            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.2, 1.0),
+        }
+    elif hyperparameters == "default":
+        params = {}
+    else:
+        raise ValueError("hyperparameters must be 'optimize' or 'default'")
+    params.update(filter_args(LGBMClassifier, **kwargs))
+    model = LGBMClassifier(objective="binary", **params)
+    return model
+
+
+def instantiate_KNN_Classifier(
+    trial: Trial, hyperparameters: str = "optimize", **kwargs
+):
+    if hyperparameters == "optimize":
+        params = {
+            "n_neighbors": trial.suggest_int("n_neighbors", 5, 50),
+            "leaf_size": trial.suggest_int("leaf_size", 10, 50),
+            "p": trial.suggest_int("p", 1, 2),
+        }
+    elif hyperparameters == "default":
+        params = {}
+    else:
+        raise ValueError("hyperparameters must be 'optimize' or 'default'")
+    params.update(filter_args(KNeighborsClassifier, **kwargs))
+    estimator = KNeighborsClassifier(weights="distance", **params)
+    return estimator
+
+
+def instantiate_ENet_Classifier(
+    trial: Trial, hyperparameters: str = "optimize", **kwargs
+):
+    if hyperparameters == "optimize":
+        params = {
+            "C": trial.suggest_float("C", 1e-4, 1e1),
+            "l1_ratio": trial.suggest_float("l1_ratio", 0.0, 1.0),
+        }
+    elif hyperparameters == "default":
+        params = {}
+    else:
+        raise ValueError("hyperparameters must be 'optimize' or 'default'")
+    params.update(filter_args(LogisticRegression, **kwargs))
+    estimator = LogisticRegression(solver="saga", **params)
+    return estimator
+
+
+def instantiate_PrimalLR_Classifier(
+    trial: Trial, hyperparameters: str = "optimize", **kwargs
+):
+    if hyperparameters == "optimize":
+        params = {
+            "C": trial.suggest_float("C", 1e-4, 1e1),
+            "solver": trial.suggest_categorical(
+                "LR_solver", ["newton-cg", "lbfgs", "liblinear", "sag", "saga"]
+            ),
+        }
+    elif hyperparameters == "default":
+        params = {}
+    else:
+        raise ValueError("hyperparameters must be 'optimize' or 'default'")
+    params.update(filter_args(LogisticRegression, **kwargs))
+    estimator = LogisticRegression(penalty="l2", dual=False, **params)
+    return estimator
+
+
+def instantiate_DualLR_Classifier(
+    trial: Trial, hyperparameters: str = "optimize", **kwargs
+):
+    if hyperparameters == "optimize":
+        params = {
+            "C": trial.suggest_float("C", 1e-4, 1e1),
+        }
+    elif hyperparameters == "default":
+        params = {}
+    else:
+        raise ValueError("hyperparameters must be 'optimize' or 'default'")
+    params.update(filter_args(LogisticRegression, **kwargs))
+    estimator = LogisticRegression(
+        penalty="l2", solver="liblinear", dual=True, **params
+    )
+    return estimator
+
+
+def instantiate_Ridge_Classifier(
+    trial: Trial, hyperparameters: str = "optimize", **kwargs
+):
+    if hyperparameters == "optimize":
+        params = {
+            "alpha": trial.suggest_float("alpha", 1e-4, 1e1),
+        }
+    elif hyperparameters == "default":
+        params = {}
+    else:
+        raise ValueError("hyperparameters must be 'optimize' or 'default'")
+    params.update(filter_args(RidgeClassifier, **kwargs))
+    estimator = RidgeClassifier(solver="auto", **params)
+    return estimator
+
+
+def instantiate_LDA_Classifier(
+    trial: Trial, hyperparameters: str = "optimize", **kwargs
+):
+
+    if hyperparameters == "optimize":
+        params = {
+            "solver": trial.suggest_categorical("LDA_solver", ["svd", "lsqr", "eigen"]),
+            "n_components": trial.suggest_int("n_components", 1),
+        }
+    elif hyperparameters == "default":
+        params = {}
+    else:
+        raise ValueError("hyperparameters must be 'optimize' or 'default'")
+
+    params.update(filter_args(LinearDiscriminantAnalysis, **kwargs))
+    estimator = LinearDiscriminantAnalysis(**params)
+    return estimator
+
+
+def instantiate_model(
+    trial: Trial,
+    random_state: int = 42,
+    algorithm: Union[str, list] = "optimize",
+    hyperparameters: str = "optimize",
+):
+    """
+    Instantiate a machine learning model based on the given algorithm and trial.
+
+    Parameters:
+    trial (Trial): An Optuna trial object used for hyperparameters optimization.
+    random_state (int, optional): Random state for reproducibility. Defaults to 42.
+    algorithm (Union[str, list], optional): The algorithm to use or 'Optimize' to select the best algorithm. Defaults to 'Optimize'.
+    hyperparameters (str, optional): Whether to optimize hyperparameters. Defaults to 'Optimize'.
+
+    Returns:
+    model: An instantiated machine learning model.
+    """
+
+    if algorithm == "optimize":
+        algorithm = trial.suggest_categorical(
+            "algorithm",
+            [
+                "LSVM",
+                "RBFSVM",
+                "NuLSVM",
+                "NuRBFSVM",
+                "SGD",
+                "MLP",
+                "RF",
+                "ET",
+                "LGBM",
+                "KNN",
+                "ENet",
+                "PLR",
+                "DLR",
+                "Ridge",
+                "LDA",
+            ],
+        )
+    elif isinstance(algorithm, list):
+        algorithm = trial.suggest_categorical(
+            "algorithm",
+            algorithm,
+        )
+
+    kwargs = {
+        "cache_size": 2**9,
+        "tol": 1e-4,
+        "class_weight": "balanced",
+        "probability": True,
+        "verbose": 0,
+        "max_iter": 2**10,
+        "random_state": random_state,
+        "n_jobs": -1,
+    }
+
+    if algorithm == "LSVM":
+        model = instantiate_LSVM_Classifier(trial, hyperparameters, **kwargs)
+
+    elif algorithm == "RBFSVM":
+        model = instantiate_RBFSVM_Classifier(trial, hyperparameters, **kwargs)
+
+    elif algorithm == "NuLSVM":
+        model = instantiate_NuLSVM_Classifier(trial, hyperparameters, **kwargs)
+
+    elif algorithm == "NuRBFSVM":
+        model = instantiate_NuRBFSVM_Classifier(trial, hyperparameters, **kwargs)
+
+    elif algorithm == "SGD":
+        model = instantiate_SGD_Classifier(trial, hyperparameters, **kwargs)
+
+    elif algorithm == "MLP":
+        model = instantiate_MLP_Classifier(trial, hyperparameters, **kwargs)
+
+    elif algorithm == "RF":
+        model = instantiate_RF_Classifier(trial, hyperparameters, **kwargs)
+
+    elif algorithm == "ET":
+        model = instantiate_ET_Classifier(trial, hyperparameters, **kwargs)
+
+    elif algorithm == "LGBM":
+        model = instantiate_LGBM_Classifier(trial, hyperparameters, **kwargs)
+
+    # elif algorithm == "XGB":
+    #     model = instantiate_XGB_Classifier(trial, hyperparameters, **kwargs)
+
+    elif algorithm == "KNN":
+        model = instantiate_KNN_Classifier(trial, hyperparameters, **kwargs)
+
+    elif algorithm == "ENet":
+        model = instantiate_ENet_Classifier(trial, hyperparameters, **kwargs)
+
+    elif algorithm == "PLR":
+        model = instantiate_PrimalLR_Classifier(trial, hyperparameters, **kwargs)
+
+    elif algorithm == "DLR":
+        model = instantiate_DualLR_Classifier(trial, hyperparameters, **kwargs)
+
+    elif algorithm == "Ridge":
+        model = instantiate_Ridge_Classifier(trial, hyperparameters, **kwargs)
+
+    elif algorithm == "LDA":
+        model = instantiate_LDA_Classifier(trial, hyperparameters, **kwargs)
+
+    else:
+        raise ValueError(
+            f"Unknown algorithm: {algorithm}.Valid algorithms are: 'LSVM', 'RBFSVM', 'NuLSVM', 'NuRBFSVM', 'SGD', 'MLP', 'RF', 'ET', 'LGBM', 'KNN', 'ENet', 'PLR', 'DLR', 'Ridge', 'LDA'."
+        )
+
+    return model
+
+
+def instantiate_pipeline(
+    trial: Trial,
+    task: str = "classification",
+    feature_selector: Union[str, list] = "optimize",
+    scaler: Union[str, list] = "optimize",
+    algorithm: Union[str, list] = "optimize",
+    hyperparameters: str = "optimize",
+    random_state: int = 42,
+):
+
+    feature_selector = instantiate_feature_selector(
+        trial,
+        task=task,
+        method=feature_selector,
+        hyperparameters=hyperparameters,
+        random_state=random_state,
+    )
+
+    scaler = instantiate_scaler(
+        trial,
+        method=scaler,
+        hyperparameters=hyperparameters,
+        random_state=random_state,
+    )
+
+    model = instantiate_model(
+        trial,
+        algorithm=algorithm,
+        hyperparameters=hyperparameters,
+        random_state=random_state,
+    )
+
+    pipeline = Pipeline(
+        [("feature_selector", feature_selector), ("scaler", scaler), ("model", model)]
+    )
+
+    return pipeline
