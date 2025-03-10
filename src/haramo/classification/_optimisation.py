@@ -8,8 +8,7 @@ import pandas as pd
 import numpy as np
 
 import pickle
-import joblib
-from pathlib import Path
+
 from tqdm import tqdm
 from typing import Union, Callable
 from os import PathLike
@@ -17,7 +16,6 @@ from os import PathLike
 from sklearn.utils.class_weight import compute_sample_weight
 from sklearn.model_selection import (
     StratifiedKFold,
-    cross_val_score,
 )
 from sklearn.metrics import get_scorer
 
@@ -505,9 +503,6 @@ def magic_now(
     if not output_dir:
         raise ValueError("Output directory must be specified.")
 
-    tmp = output_dir / "tmp"
-    tmp.mkdir(exist_ok=True)
-
     results = output_dir / "results"
     results.mkdir(exist_ok=True)
 
@@ -540,7 +535,7 @@ def magic_now(
     )
 
     with open(
-        models / f"pipeline{tag}.pkl",
+        models / f"pipelines{tag}.pkl",
         "wb",
     ) as handle:
         pickle.dump(pipeline, handle)
@@ -551,10 +546,6 @@ def magic_now(
     ) as handle:
         pickle.dump(studies, handle)
 
-    with open(
-        tmp / f"validation{tag}.pkl",
-        "wb",
-    ) as handle:
-        pickle.dump(validation, handle)
+    validation.to_csv(results / f"validation{tag}.tsv", sep="\t", index=True)
 
     return validation, pipeline, studies
