@@ -13,9 +13,34 @@ from sklearn.preprocessing import (
 
 from optuna import Trial
 
+import pandas as pd
+import numpy as np
+
 #############
 # Functions #
 #############
+
+
+class ScalerWrapper:
+    def __init__(self, scaler: callable):
+        self.scaler = scaler
+
+    def fit(self, X: Union[np.ndarray, pd.DataFrame], y=None):
+        self.scaler.fit(X, y)
+        return self
+
+    def transform(self, X: Union[np.ndarray, pd.DataFrame]):
+        transformed = self.scaler.transform(X)
+        if isinstance(X, pd.DataFrame):
+            return pd.DataFrame(transformed, columns=X.columns, index=X.index)
+        elif isinstance(X, np.ndarray):
+            return transformed
+        else:
+            raise ValueError("Input must be a DataFrame or ndarray")
+
+    def fit_transform(self, X: Union[np.ndarray, pd.DataFrame], y=None):
+        self.fit(X, y)
+        return self.transform(X)
 
 
 def instantiate_standard_scaler(trial: Trial, hyperparameters: str = "optimize"):
@@ -29,7 +54,7 @@ def instantiate_standard_scaler(trial: Trial, hyperparameters: str = "optimize")
     else:
         raise ValueError("hyperparameters must be 'optimize' or 'default'")
     scaler = StandardScaler(**params)
-    return scaler
+    return ScalerWrapper(scaler)
 
 
 def instantiate_minmax_scaler(trial: Trial, hyperparameters: str = "optimize"):
@@ -44,7 +69,7 @@ def instantiate_minmax_scaler(trial: Trial, hyperparameters: str = "optimize"):
     else:
         raise ValueError("hyperparameters must be 'optimize' or 'default'")
     scaler = MinMaxScaler(**params)
-    return scaler
+    return ScalerWrapper(scaler)
 
 
 def instantiate_robust_scaler(trial: Trial, hyperparameters: str = "optimize"):
@@ -63,7 +88,7 @@ def instantiate_robust_scaler(trial: Trial, hyperparameters: str = "optimize"):
     else:
         raise ValueError("hyperparameters must be 'optimize' or 'default'")
     scaler = RobustScaler(**params)
-    return scaler
+    return ScalerWrapper(scaler)
 
 
 def instantiate_identity_function(trial: Trial, hyperparameters: str = "optimize"):
@@ -74,7 +99,7 @@ def instantiate_identity_function(trial: Trial, hyperparameters: str = "optimize
     else:
         raise ValueError("hyperparameters must be 'optimize' or 'default'")
     function = FunctionTransformer()
-    return function
+    return ScalerWrapper(function)
 
 
 def instantiate_scaler(

@@ -6,7 +6,6 @@ import pandas as pd
 import numpy as np
 from typing import Union
 
-from boruta import BorutaPy
 from ._tools import BorutaPyWrapper
 
 from sklearn.feature_selection import VarianceThreshold
@@ -66,15 +65,15 @@ def instantiate_boruta_filter(
 
     if hyperparameters == "optimize":
         params = {
-            "perc": trial.suggest_int("perc", 80, 100),
+            "perc": trial.suggest_int("perc", 80, 101, step=10),
             "max_leaf_nodes": trial.suggest_int(
-                "boruta_max_leaf_nodes", 10, 51, step=5
+                "boruta_max_leaf_nodes", 10, 51, step=10
             ),
             "n_estimators": trial.suggest_int("boruta_n_estimators", 200, 501, step=50),
         }
 
     elif hyperparameters == "default":
-        params = {"max_iter": 20}
+        params = {"max_iter": 100}
     else:
         raise ValueError("hyperparameters must be 'optimize' or 'default'")
 
@@ -101,10 +100,6 @@ def instantiate_boruta_filter(
         )
     else:
         raise ValueError("task must be 'regression' or 'classification'")
-
-    # np.int = np.int32
-    # np.float = np.float64
-    # np.bool = np.bool_
 
     # define Boruta feature selection method
     filter = BorutaPyWrapper(
