@@ -195,14 +195,14 @@ def get_search_space(feature_selector, scaler, algorithm):
     n_trials = 1
 
     if feature_selector == "optimize":
-        search_space["feature_selection_method"] = [
-            None,
-            "variance",
-            "pvalue",
-            "boruta",
-            "combine",
-        ]
-        n_trials *= len(search_space["feature_selection_method"])
+        search_space["add_variance_filter"] = [True, False]
+        search_space["add_pvalue_filter"] = [True, False]
+        search_space["add_boruta_filter"] = [True, False]
+        n_trials *= (
+            len(search_space["add_variance_filter"])
+            * len(search_space["add_pvalue_filter"])
+            * len(search_space["add_boruta_filter"])
+        )
     elif isinstance(feature_selector, list):
         search_space["feature_selection_method"] = feature_selector
         n_trials *= len(feature_selector)
@@ -251,7 +251,6 @@ def train(
     hyperparameters: str = "optimize",
     random_state: int = 42,
     n_trials: int = 100,
-    path: Union[str, "PathLike[str]"] = None,
 ):
     """
     Train a model using stratified k-fold cross-validation and hyperparameter optimization.
@@ -288,6 +287,7 @@ def train(
     """
 
     models = {}
+    studies = {}
 
     sample_weight = pd.Series(
         compute_sample_weight(
@@ -359,8 +359,6 @@ def train(
             n_jobs=-1,
         )
 
-        joblib.dump(study, path / f"study_fold_{outer_fold}.pkl")
-
         model = instantiate_pipeline(
             trial=study.best_trial,
             feature_selector=feature_selector,
@@ -371,8 +369,9 @@ def train(
         )
 
         models[f"fold_{outer_fold}"] = model
+        studies[f"fold_{outer_fold}"] = study
 
-    return models
+    return models, studies
 
 
 def nested_crossval(
@@ -493,13 +492,14 @@ def magic_now(
     y: Union[np.ndarray, pd.Series, list],
     scoring: Union[str, Callable] = "balanced_accuracy",
     task: str = "classification",
-    feature_selector: Union[str, list] = "optimize",
+    feature_selector: Union[str, list] = "combine",
     scaler: Union[str, list] = "optimize",
     algorithm: Union[str, list] = "optimize",
     hyperparameters: str = "optimize",
     random_state: int = 42,
     n_trials: int = 100,
     output_dir: Union[str, "PathLike[str]"] = None,
+    tag: str = "",
 ):
 
     if not output_dir:
@@ -520,7 +520,7 @@ def magic_now(
     plots = output_dir / "plots"
     plots.mkdir(exist_ok=True)
 
-    pipelines = train(
+    pipelines, studies = train(
         X=X,
         y=y,
         scoring=scoring,
@@ -531,7 +531,6 @@ def magic_now(
         hyperparameters=hyperparameters,
         random_state=random_state,
         n_trials=n_trials,
-        path=trials,
     )
 
     validation, pipeline = nested_crossval(
@@ -541,75 +540,21 @@ def magic_now(
     )
 
     with open(
-        models / "pipeline.pkl",
+        models / f"pipeline{tag}.pkl",
         "wb",
     ) as handle:
         pickle.dump(pipeline, handle)
 
     with open(
-        tmp / "validation.pkl",
+        trials / f"studies{tag}.pkl",
+        "wb",
+    ) as handle:
+        pickle.dump(studies, handle)
+
+    with open(
+        tmp / f"validation{tag}.pkl",
         "wb",
     ) as handle:
         pickle.dump(validation, handle)
 
-    return validation, pipeline
-
-    # AD = AnomalyDetection(
-    #     n_neighbors=10, metric="braycurtis", supervised=True
-    # )
-    # anomalies, status = AD.fit_predict(X, y)
-    # AD.scatter2D(
-    #     annotations=metadata.loc[:, :"Virus TAX"],
-    #     title=f"{protein}_{species}_pvalue",
-    #     path=plots,
-    # )
-
-    # @after(*jobs)  # Waits for all selection jobs to complete
-    # @job(
-    #     name="collect_result",
-    #     **kwargs,
-    # )
-    # def collect():
-    #     # Get all .pkl files in the directory
-    #     files = list(tmp.glob(f"validation_*.pkl"))
-    #     is_initialized = False
-
-    #     result = pd.DataFrame()
-    #     result.columns = pd.MultiIndex.from_product([[""], result.columns])
-
-    #     for file in files:
-    #         # Open the .pkl file
-    #         with open(file, "rb") as pkl_file:
-    #             content = pickle.load(pkl_file)
-    #             name = file.name.split(".")[0]
-    #         protein = name.split("_")[1]
-    #         species = name.split("_")[2]
-    #         combination = name.split("_")[3]
-    #         content.columns = pd.MultiIndex.from_tuples(
-    #             [(protein, species, fold, combination) for fold in content.columns]
-    #         )
-
-    #         if not is_initialized:
-    #             # If result hasn't been initialized, set it to the first DataFrame
-    #             result = content
-    #             is_initialized = True
-    #         else:
-    #             # If result has been initialized, merge the new DataFrame with it
-    #             result = result.merge(content, left_index=True, right_index=True)
-
-    #     result.columns.names = ["Antibiotic", "Model", "Fold", "Data"]
-    #     result = result.T
-    #     result.to_csv(
-    #         results / "NestedCV.tsv",
-    #         sep="\t",
-    #     )
-
-    # schedule(
-    #     collect,
-    #     name="PREDOMICS",
-    #     backend="slurm",
-    #     env=[
-    #         "source ~/.bashrc",
-    #         "conda activate ml_magitics",
-    #     ],
-    # )
+    return validation, pipeline, studies

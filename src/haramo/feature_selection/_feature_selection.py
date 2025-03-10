@@ -163,26 +163,21 @@ def combined_feature_selector(
     """
     steps = []
 
-    if hyperparameters == "default":
-        add_variance_filter = True
-        add_pvalue_filter = True
-        add_boruta_filter = True
-    else:
-        # Decide whether to add variance filter
-        add_variance_filter = trial.suggest_categorical(
-            "add_variance_filter",
-            [True, False],
-        )
-        # Decide whether to add p-value filter
-        add_pvalue_filter = trial.suggest_categorical(
-            "add_pvalue_filter",
-            [True, False],
-        )
-        # Decide whether to add Boruta filter
-        add_boruta_filter = trial.suggest_categorical(
-            "add_boruta_filter",
-            [True, False],
-        )
+    # Decide whether to add variance filter
+    add_variance_filter = trial.suggest_categorical(
+        "add_variance_filter",
+        [True, False],
+    )
+    # Decide whether to add p-value filter
+    add_pvalue_filter = trial.suggest_categorical(
+        "add_pvalue_filter",
+        [True, False],
+    )
+    # Decide whether to add Boruta filter
+    add_boruta_filter = trial.suggest_categorical(
+        "add_boruta_filter",
+        [True, False],
+    )
 
     if add_variance_filter:
         variance_filter = instantiate_variance_filter(trial, hyperparameters)
@@ -236,15 +231,11 @@ def instantiate_feature_selector(
     """
 
     if method == "optimize":
-        method = trial.suggest_categorical(
-            "feature_selection_method",
-            [
-                None,
-                "variance",
-                "pvalue",
-                "boruta",
-                "combine",
-            ],
+        selector = combined_feature_selector(
+            trial,
+            task=task,
+            hyperparameters=hyperparameters,
+            random_state=random_state,
         )
 
     elif isinstance(method, list):
@@ -269,17 +260,9 @@ def instantiate_feature_selector(
             random_state=random_state,
         )
 
-    elif method == "combine":
-        selector = combined_feature_selector(
-            trial,
-            task=task,
-            hyperparameters=hyperparameters,
-            random_state=random_state,
-        )
-
     else:
         raise ValueError(
-            f"Invalid feature selection method: {method}. Valid methods are: None, 'variance', 'pvalue', 'boruta', 'combine'."
+            f"Invalid feature selection method: {method}. Valid methods are: None, 'variance', 'pvalue', 'boruta'."
         )
 
     return selector
