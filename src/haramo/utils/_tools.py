@@ -70,7 +70,11 @@ class TransformerWrapper:
     def transform(self, X: Union[np.ndarray, pd.DataFrame]):
         transformed = self.scaler.transform(X)
         if isinstance(X, pd.DataFrame):
-            return pd.DataFrame(transformed, columns=X.columns, index=X.index)
+            try:
+                columns = self.scaler.get_feature_names_out()
+            except AttributeError:
+                columns = X.columns
+            return pd.DataFrame(transformed, columns=columns, index=X.index)
         elif isinstance(X, np.ndarray):
             return transformed
         else:

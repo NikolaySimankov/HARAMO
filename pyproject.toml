@@ -10,7 +10,7 @@ license = "MIT"
 
 [tool.poetry.dependencies]
 python = "^3.12.8"
-Boruta = "^0.3.0"
+Boruta = "^0.4.3"
 numpy = "^2.2.2"
 optuna = "^4.2.0"
 pandas = "^2.2.3"
