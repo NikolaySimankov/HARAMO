@@ -6,14 +6,14 @@ import pandas as pd
 import numpy as np
 from typing import Union
 
-from ._tools import BorutaPyWrapper
-
 from sklearn.feature_selection import VarianceThreshold
 from sklearn.pipeline import Pipeline
 
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.ensemble import RandomForestRegressor
 from ..utils import (
+    TransformerWrapper,
+    BorutaPyWrapper,
     PValueFeatureSelector,
     filter_args,
     instantiate_identity_function,
@@ -53,7 +53,7 @@ def instantiate_variance_filter(trial: Trial, hyperparameters: str = "optimize")
 
     filter = VarianceThreshold(**params)
 
-    return filter
+    return TransformerWrapper(filter)
 
 
 def instantiate_boruta_filter(
@@ -73,7 +73,7 @@ def instantiate_boruta_filter(
         }
 
     elif hyperparameters == "default":
-        params = {"max_iter": 100}
+        params = {}
     else:
         raise ValueError("hyperparameters must be 'optimize' or 'default'")
 
@@ -230,15 +230,7 @@ def instantiate_feature_selector(
         The instantiated feature selector object.
     """
 
-    if method == "optimize":
-        selector = combined_feature_selector(
-            trial,
-            task=task,
-            hyperparameters=hyperparameters,
-            random_state=random_state,
-        )
-
-    elif isinstance(method, list):
+    if isinstance(method, list):
         method = trial.suggest_categorical("feature_selection_method", method)
     else:
         pass
@@ -260,9 +252,17 @@ def instantiate_feature_selector(
             random_state=random_state,
         )
 
+    elif method == "optimize":
+        selector = combined_feature_selector(
+            trial,
+            task=task,
+            hyperparameters=hyperparameters,
+            random_state=random_state,
+        )
+
     else:
         raise ValueError(
-            f"Invalid feature selection method: {method}. Valid methods are: None, 'variance', 'pvalue', 'boruta'."
+            f"Invalid feature selection method: {method}. Valid methods are: None, 'variance', 'pvalue', 'boruta', 'optimize'."
         )
 
     return selector

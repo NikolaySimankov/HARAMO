@@ -4,6 +4,8 @@ from ._tools import (
     union_lists,
     filter_args,
     pruner_sampling,
+    BorutaPyWrapper,
+    TransformerWrapper,
     PValueFeatureSelector,
 )
 
@@ -29,6 +31,8 @@ __all__ = [
     "union_lists",
     "filter_args",
     "pruner_sampling",
+    "BorutaPyWrapper",
+    "TransformerWrapper",
     "PValueFeatureSelector",
     "classification_report",
     "biserial_scorer",

@@ -9,6 +9,8 @@ import inspect
 
 from sklearn.base import BaseEstimator, TransformerMixin
 
+from boruta import BorutaPy
+
 from ._evaluation import pearson_scorer
 
 from pandas.api.types import is_bool_dtype, is_numeric_dtype
@@ -22,6 +24,61 @@ import warnings
 #############
 # Functions #
 #############
+
+
+class BorutaPyWrapper(BorutaPy):
+
+    def fit(self, X, y):
+        self._is_dataframe = isinstance(X, pd.DataFrame)
+        return super().fit(X, y)
+
+    def transform(self, X, weak=False):
+        return self._transform(X, weak)
+
+    def fit_transform(self, X, y, weak=False):
+        self.fit(X, y)
+        return self._transform(X, weak)
+
+    def _transform(self, X, weak=False):
+        # sanity check
+        try:
+            self.ranking_
+        except AttributeError:
+            raise ValueError("You need to call the fit(X, y) method first.")
+
+        if weak:
+            indices = self.support_ + self.support_weak_
+        else:
+            indices = self.support_
+
+        if self._is_dataframe:
+            X = X.iloc[:, indices]
+        else:
+            X = X[:, indices]
+
+        return X
+
+
+class TransformerWrapper:
+    def __init__(self, scaler: callable):
+        self.scaler = scaler
+
+    def fit(self, X: Union[np.ndarray, pd.DataFrame], y=None):
+        self.scaler.fit(X, y)
+        return self
+
+    def transform(self, X: Union[np.ndarray, pd.DataFrame]):
+        transformed = self.scaler.transform(X)
+        if isinstance(X, pd.DataFrame):
+            return pd.DataFrame(transformed, columns=X.columns, index=X.index)
+        elif isinstance(X, np.ndarray):
+            return transformed
+        else:
+            raise ValueError("Input must be a DataFrame or ndarray")
+
+    def fit_transform(self, X: Union[np.ndarray, pd.DataFrame], y=None):
+        self.fit(X, y)
+        return self.transform(X)
 
 
 class PValueFeatureSelector(BaseEstimator, TransformerMixin):
