@@ -69,7 +69,9 @@ def instantiate_boruta_filter(
             "max_leaf_nodes": trial.suggest_int(
                 "boruta_max_leaf_nodes", 10, 51, step=10
             ),
-            "n_estimators": trial.suggest_int("boruta_n_estimators", 200, 501, step=50),
+            "n_estimators": trial.suggest_int(
+                "boruta_n_estimators", 100, 501, step=100
+            ),
         }
 
     elif hyperparameters == "default":
@@ -80,7 +82,7 @@ def instantiate_boruta_filter(
     params.update(
         {
             "random_state": random_state,
-            "n_jobs": -1,
+            "n_jobs": 1,
         },
     )
 
@@ -104,7 +106,7 @@ def instantiate_boruta_filter(
     # define Boruta feature selection method
     filter = BorutaPyWrapper(
         estimator=estimator,
-        verbose=2,
+        verbose=0,
         max_iter=100,
         **(filter_args(BorutaPyWrapper, **params)),
     )
@@ -163,11 +165,6 @@ def combined_feature_selector(
     """
     steps = []
 
-    # Decide whether to add variance filter
-    add_variance_filter = trial.suggest_categorical(
-        "add_variance_filter",
-        [True, False],
-    )
     # Decide whether to add p-value filter
     add_pvalue_filter = trial.suggest_categorical(
         "add_pvalue_filter",
@@ -178,10 +175,6 @@ def combined_feature_selector(
         "add_boruta_filter",
         [True, False],
     )
-
-    if add_variance_filter:
-        variance_filter = instantiate_variance_filter(trial, hyperparameters)
-        steps.append(("variance", variance_filter))
 
     if add_pvalue_filter:
         pvalue_filter = instantiate_pvalue_filter(trial, hyperparameters)
@@ -238,9 +231,6 @@ def instantiate_feature_selector(
     if method == None:
         selector = instantiate_identity_function(trial)
 
-    elif method == "variance":
-        selector = instantiate_variance_filter(trial, hyperparameters)
-
     elif method == "pvalue":
         selector = instantiate_pvalue_filter(trial, hyperparameters)
 
@@ -262,7 +252,7 @@ def instantiate_feature_selector(
 
     else:
         raise ValueError(
-            f"Invalid feature selection method: {method}. Valid methods are: None, 'variance', 'pvalue', 'boruta', 'optimize'."
+            f"Invalid feature selection method: {method}. Valid methods are: None, 'pvalue', 'boruta', 'optimize'."
         )
 
     return selector

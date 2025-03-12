@@ -19,7 +19,10 @@ from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.pipeline import Pipeline
 
 from ..utils import instantiate_scaler, filter_args
-from ..feature_selection import instantiate_feature_selector
+from ..feature_selection import (
+    instantiate_feature_selector,
+    instantiate_variance_filter,
+)
 
 from optuna import Trial
 
@@ -146,7 +149,7 @@ def instantiate_RF_Classifier(
     if hyperparameters == "optimize":
         params = {
             "n_estimators": trial.suggest_int("RF_n_estimators", 2**7, 2**10),
-            "max_leaf_nodes": trial.suggest_int("max_leaf_nodes", 5, 50),
+            "max_leaf_nodes": trial.suggest_int("max_leaf_nodes", 5, 35),
         }
     elif hyperparameters == "default":
         params = {}
@@ -165,7 +168,7 @@ def instantiate_ET_Classifier(
     if hyperparameters == "optimize":
         params = {
             "n_estimators": trial.suggest_int("ET_n_estimators", 2**7, 2**10),
-            "max_leaf_nodes": trial.suggest_int("max_leaf_nodes", 5, 50),
+            "max_leaf_nodes": trial.suggest_int("max_leaf_nodes", 5, 35),
         }
     elif hyperparameters == "default":
         params = {}
@@ -181,7 +184,7 @@ def instantiate_LGBM_Classifier(
 ):
     if hyperparameters == "optimize":
         params = {
-            "num_leaves": trial.suggest_int("num_leaves", 5, 50),
+            "num_leaves": trial.suggest_int("num_leaves", 5, 35),
             "learning_rate": trial.suggest_float("learning_rate", 1e-3, 1e-0),
             "n_estimators": trial.suggest_int("n_estimators", 2**7, 2**10),
             "reg_alpha": trial.suggest_float("reg_alpha", 1e-3, 1e1),
@@ -192,8 +195,10 @@ def instantiate_LGBM_Classifier(
         params = {}
     else:
         raise ValueError("hyperparameters must be 'optimize' or 'default'")
+
+    kwargs["verbose"] = -1
     params.update(filter_args(LGBMClassifier, **kwargs))
-    model = LGBMClassifier(objective="binary", **params)
+    model = LGBMClassifier(force_col_wise=True, objective="binary", **params)
     return model
 
 
@@ -356,9 +361,9 @@ def instantiate_model(
         "class_weight": "balanced",
         "probability": True,
         "verbose": 0,
-        "max_iter": 2**10,
+        "max_iter": 2**12,
         "random_state": random_state,
-        "n_jobs": -1,
+        "n_jobs": 1,
     }
 
     if algorithm == "LSVM":
@@ -427,6 +432,11 @@ def instantiate_pipeline(
     random_state: int = 42,
 ):
 
+    filter = instantiate_variance_filter(
+        trial,
+        hyperparameters=hyperparameters,
+    )
+
     feature_selector = instantiate_feature_selector(
         trial,
         task=task,
@@ -450,7 +460,12 @@ def instantiate_pipeline(
     )
 
     pipeline = Pipeline(
-        [("feature_selector", feature_selector), ("scaler", scaler), ("model", model)]
+        [
+            ("filter", filter),
+            ("feature_selector", feature_selector),
+            ("scaler", scaler),
+            ("model", model),
+        ]
     )
 
     return pipeline

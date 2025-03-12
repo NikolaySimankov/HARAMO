@@ -14,9 +14,7 @@ from typing import Union, Callable
 from os import PathLike
 
 from sklearn.utils.class_weight import compute_sample_weight
-from sklearn.model_selection import (
-    StratifiedKFold,
-)
+from sklearn.model_selection import StratifiedKFold, cross_val_score
 from sklearn.metrics import get_scorer
 
 from optuna import (
@@ -147,32 +145,32 @@ def objective(
     )
 
     strat_kfold_inner = StratifiedKFold(
-        n_splits=5,
+        n_splits=4,
         shuffle=True,
         random_state=random_state,
     )
 
-    for n_samples in pruner_sampling(y_train, base, n_rungs):
-        X_train_batch = X_train.sample(n_samples, random_state=random_state)
-        y_train_batch = y_train.sample(n_samples, random_state=random_state)
-        w_train_batch = sample_weight.sample(n_samples, random_state=random_state)
+    # for n_samples in pruner_sampling(y_train, base, n_rungs):
+    #     X_train_batch = X_train.sample(n_samples, random_state=random_state)
+    #     y_train_batch = y_train.sample(n_samples, random_state=random_state)
+    #     w_train_batch = sample_weight.sample(n_samples, random_state=random_state)
 
-    try:
-        pipeline.fit(X_train_batch, y_train_batch, model__sample_weight=w_train_batch)
-    except:
-        pipeline.fit(X_train_batch, y_train_batch)
+    # try:
+    #     pipeline.fit(X_train_batch, y_train_batch, model__sample_weight=w_train_batch)
+    # except:
+    #     pipeline.fit(X_train_batch, y_train_batch)
 
-    if isinstance(scoring, str):
-        scorer = get_scorer(scoring)
-    else:
-        scorer = scoring
+    # if isinstance(scoring, str):
+    #     scorer = get_scorer(scoring)
+    # else:
+    #     scorer = scoring
 
-    score = scorer(pipeline, X_test, y_test)
+    # score = scorer(pipeline, X_test, y_test)
 
-    trial.report(score, n_samples)
+    # trial.report(score, n_samples)
 
-    if trial.should_prune():
-        raise TrialPruned()
+    # if trial.should_prune():
+    #     raise TrialPruned()
 
     scores = pipeline_cross_val(
         pipeline,
@@ -193,13 +191,10 @@ def get_search_space(feature_selector, scaler, algorithm):
     n_trials = 1
 
     if feature_selector == "optimize":
-        search_space["add_variance_filter"] = [True, False]
         search_space["add_pvalue_filter"] = [True, False]
         search_space["add_boruta_filter"] = [True, False]
-        n_trials *= (
-            len(search_space["add_variance_filter"])
-            * len(search_space["add_pvalue_filter"])
-            * len(search_space["add_boruta_filter"])
+        n_trials *= len(search_space["add_pvalue_filter"]) * len(
+            search_space["add_boruta_filter"]
         )
     elif isinstance(feature_selector, list):
         search_space["feature_selection_method"] = feature_selector
@@ -295,7 +290,7 @@ def train(
     )
 
     strat_kfold_outer = StratifiedKFold(
-        n_splits=5,
+        n_splits=4,
         shuffle=True,
         random_state=random_state,
     )
@@ -354,7 +349,7 @@ def train(
                 n_rungs=5,
             ),
             n_trials=n_trials,
-            n_jobs=-1,
+            n_jobs=4,
         )
 
         model = instantiate_pipeline(
@@ -409,7 +404,7 @@ def nested_crossval(
     )
 
     strat_kfold_outer = StratifiedKFold(
-        n_splits=5,
+        n_splits=4,
         shuffle=True,
         random_state=random_state,
     )
