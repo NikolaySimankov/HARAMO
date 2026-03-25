@@ -105,7 +105,6 @@ def instantiate_boruta_filter(
     filter = GreedyBorutaPyWrapper(
         estimator=estimator,
         verbose=0,
-        max_iter=100,
         n_estimators="auto",
         alpha=0.01,
         **(filter_args(GreedyBorutaPyWrapper, **params)),
