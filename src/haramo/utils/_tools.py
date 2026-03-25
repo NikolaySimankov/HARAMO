@@ -98,6 +98,7 @@ class TransformerWrapper:
 
     def fit(self, X: Union[np.ndarray, pd.DataFrame], y=None):
         self.scaler.fit(X, y)
+        self.is_fitted_ = True
         return self
 
     def transform(self, X: Union[np.ndarray, pd.DataFrame]):
@@ -126,7 +127,6 @@ class PValueFeatureSelector(BaseEstimator, TransformerMixin):
     def __init__(self, threshold=0.05, correlation_func: callable = pearson_scorer):
         self.threshold = threshold
         self.correlation_func = correlation_func
-        self.significant_features = []
 
     def fit(self, X, y):
         """
@@ -153,7 +153,7 @@ class PValueFeatureSelector(BaseEstimator, TransformerMixin):
         _, p_value = self.correlation_func(X, y)
 
         # Select features where p-value is less than the threshold
-        self.significant_features = X.columns[p_value < self.threshold].tolist()
+        self.significant_features_ = X.columns[p_value < self.threshold].tolist()
 
         return self
 
@@ -190,7 +190,7 @@ class PValueFeatureSelector(BaseEstimator, TransformerMixin):
             Transformed feature matrix with selected features.
         """
 
-        X_new = X[self.significant_features]
+        X_new = X[self.significant_features_]
 
         return X_new
 
