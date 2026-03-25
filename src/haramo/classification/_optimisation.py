@@ -493,6 +493,19 @@ def nested_crossval(
     # Select the model corresponding to the best fold
     best_model = pipelines[best_fold]
 
+    try:
+        best_model.fit(
+            X,
+            y,
+            model__sample_weight=sample_weight,
+        )
+
+    except:
+        best_model.fit(
+            X,
+            y,
+        )
+
     validation = validation.T
 
     return validation, best_model
