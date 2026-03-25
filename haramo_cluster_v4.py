@@ -256,7 +256,7 @@ if __name__ == "__main__":
 
                             X.dropna(axis=1, inplace=True)
 
-                            validation, pipeline, studies = magic_now(
+                            magic_now(
                                 X=X,
                                 y=y,
                                 scoring=mcc_scorer,

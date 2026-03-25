@@ -249,6 +249,7 @@ def train(
     random_state: int = 42,
     n_trials: int = 100,
     groups: Union[np.ndarray, pd.Series, list] = None,
+    n_jobs: int = 8,
 ):
     """
     Train a model using stratified k-fold cross-validation and hyperparameter optimization.
@@ -275,6 +276,8 @@ def train(
         Random seed for reproducibility.
     n_trials : int, default=100
         Number of trials for hyperparameter optimization. igored if hyperparameters = "default"
+    n_jobs : int, default=8
+        Number of parallel jobs to run for hyperparameter optimization.
     path : Union[str, PathLike[str]], optional
         Path to save the study results.
 
@@ -359,7 +362,7 @@ def train(
                 n_rungs=5,
             ),
             n_trials=n_trials,
-            n_jobs=4,
+            n_jobs=n_jobs,
         )
 
         model = instantiate_pipeline(
@@ -525,6 +528,7 @@ def magic_now(
     output_dir: Union[str, "PathLike[str]"] = None,
     groups: Union[np.ndarray, pd.Series, list] = None,
     tag: str = "",
+    n_jobs: int = 8,
 ):
 
     if not output_dir:
@@ -554,6 +558,7 @@ def magic_now(
         random_state=random_state,
         n_trials=n_trials,
         groups=groups,
+        n_jobs=n_jobs,
     )
 
     validation, pipeline = nested_crossval(
