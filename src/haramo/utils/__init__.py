@@ -5,6 +5,7 @@ from ._tools import (
     filter_args,
     pruner_sampling,
     BorutaPyWrapper,
+    GreedyBorutaPyWrapper,
     TransformerWrapper,
     PValueFeatureSelector,
 )
@@ -32,6 +33,7 @@ __all__ = [
     "filter_args",
     "pruner_sampling",
     "BorutaPyWrapper",
+    "GreedyBorutaPyWrapper",
     "TransformerWrapper",
     "PValueFeatureSelector",
     "classification_report",

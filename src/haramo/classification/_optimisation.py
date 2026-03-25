@@ -14,7 +14,11 @@ from typing import Union, Callable
 from os import PathLike
 
 from sklearn.utils.class_weight import compute_sample_weight
-from sklearn.model_selection import StratifiedKFold, cross_val_score
+from sklearn.model_selection import (
+    StratifiedKFold,
+    StratifiedGroupKFold,
+    cross_val_score,
+)
 from sklearn.metrics import get_scorer
 
 from optuna import (
@@ -244,6 +248,7 @@ def train(
     hyperparameters: str = "optimize",
     random_state: int = 42,
     n_trials: int = 100,
+    groups: Union[np.ndarray, pd.Series, list] = None,
 ):
     """
     Train a model using stratified k-fold cross-validation and hyperparameter optimization.
@@ -289,15 +294,20 @@ def train(
         )
     )
 
-    strat_kfold_outer = StratifiedKFold(
-        n_splits=4,
-        shuffle=True,
-        random_state=random_state,
-    )
+    if groups is not None:
+        strat_kfold_outer = StratifiedGroupKFold(n_splits=4)
+    else:
+        strat_kfold_outer = StratifiedKFold(
+            n_splits=4,
+            shuffle=True,
+            random_state=random_state,
+        )
 
     outer_fold = 0
 
-    for train_index, test_index in tqdm(strat_kfold_outer.split(X, y.astype("str"))):
+    for train_index, test_index in tqdm(
+        strat_kfold_outer.split(X, y.astype("str"), groups=groups)
+    ):
         X_train, X_test = (
             X.iloc[train_index],
             X.iloc[test_index],
@@ -372,6 +382,7 @@ def nested_crossval(
     y: Union[np.ndarray, pd.Series, list],
     pipelines: dict,
     random_state: int = 42,
+    groups: Union[np.ndarray, pd.Series, list] = None,
 ):
     """
     Perform nested cross-validation on a set of models.
@@ -384,6 +395,8 @@ def nested_crossval(
         Target vector.
     models : dict
         Dictionary of models to be evaluated, where keys are fold identifiers and values are classifier instances.
+    groups : Union[np.ndarray, pd.Series, list], optional
+        Group labels for the samples, by default None
 
     Returns:
     --------
@@ -403,11 +416,14 @@ def nested_crossval(
         )
     )
 
-    strat_kfold_outer = StratifiedKFold(
-        n_splits=4,
-        shuffle=True,
-        random_state=random_state,
-    )
+    if groups is not None:
+        strat_kfold_outer = StratifiedGroupKFold(n_splits=4)
+    else:
+        strat_kfold_outer = StratifiedKFold(
+            n_splits=4,
+            shuffle=True,
+            random_state=random_state,
+        )
 
     for fold in tqdm(pipelines.keys()):
         pipeline = pipelines[fold]
@@ -416,7 +432,9 @@ def nested_crossval(
 
         all_predicted_values = pd.DataFrame()
 
-        for train_index, test_index in strat_kfold_outer.split(X, y.astype("str")):
+        for train_index, test_index in strat_kfold_outer.split(
+            X, y.astype("str"), groups=groups
+        ):
             X_train, X_test = (
                 X.iloc[train_index],
                 X.iloc[test_index],
@@ -470,7 +488,7 @@ def nested_crossval(
         pipelines[fold] = pipeline
 
     # Find the best fold based on MCC
-    best_fold = validation.T["MCC"].idxmin()
+    best_fold = validation.T["MCC"].idxmax()
 
     # Select the model corresponding to the best fold
     best_model = pipelines[best_fold]
@@ -485,13 +503,14 @@ def magic_now(
     y: Union[np.ndarray, pd.Series, list],
     scoring: Union[str, Callable] = "balanced_accuracy",
     task: str = "classification",
-    feature_selector: Union[str, list] = "combine",
+    feature_selector: Union[str, list] = "optimize",
     scaler: Union[str, list] = "optimize",
     algorithm: Union[str, list] = "optimize",
     hyperparameters: str = "optimize",
     random_state: int = 42,
     n_trials: int = 100,
     output_dir: Union[str, "PathLike[str]"] = None,
+    groups: Union[np.ndarray, pd.Series, list] = None,
     tag: str = "",
 ):
 
@@ -521,12 +540,14 @@ def magic_now(
         hyperparameters=hyperparameters,
         random_state=random_state,
         n_trials=n_trials,
+        groups=groups,
     )
 
     validation, pipeline = nested_crossval(
         X=X,
         y=y,
         pipelines=pipelines,
+        groups=groups,
     )
 
     with open(

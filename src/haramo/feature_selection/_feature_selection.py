@@ -14,6 +14,7 @@ from sklearn.ensemble import RandomForestRegressor
 from ..utils import (
     TransformerWrapper,
     BorutaPyWrapper,
+    GreedyBorutaPyWrapper,
     PValueFeatureSelector,
     filter_args,
     instantiate_identity_function,
@@ -69,9 +70,6 @@ def instantiate_boruta_filter(
             "max_leaf_nodes": trial.suggest_int(
                 "boruta_max_leaf_nodes", 10, 51, step=10
             ),
-            "n_estimators": trial.suggest_int(
-                "boruta_n_estimators", 100, 501, step=100
-            ),
         }
 
     elif hyperparameters == "default":
@@ -104,11 +102,13 @@ def instantiate_boruta_filter(
         raise ValueError("task must be 'regression' or 'classification'")
 
     # define Boruta feature selection method
-    filter = BorutaPyWrapper(
+    filter = GreedyBorutaPyWrapper(
         estimator=estimator,
         verbose=0,
         max_iter=100,
-        **(filter_args(BorutaPyWrapper, **params)),
+        n_estimators="auto",
+        alpha=0.01,
+        **(filter_args(GreedyBorutaPyWrapper, **params)),
     )
 
     return filter

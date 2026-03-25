@@ -6,8 +6,8 @@ import itertools
 from typing import Union
 
 from lightgbm import LGBMClassifier
-
-# from xgboost import XGBClassifier
+from xgboost import XGBClassifier
+from catboost import CatBoostClassifier
 
 from sklearn.svm import SVC, NuSVC
 from sklearn.linear_model import SGDClassifier, LogisticRegression, RidgeClassifier
@@ -184,9 +184,9 @@ def instantiate_LGBM_Classifier(
 ):
     if hyperparameters == "optimize":
         params = {
-            "num_leaves": trial.suggest_int("num_leaves", 5, 35),
+            "num_leaves": trial.suggest_int("num_leaves", 5, 50),
             "learning_rate": trial.suggest_float("learning_rate", 1e-3, 1e-0),
-            "n_estimators": trial.suggest_int("n_estimators", 2**7, 2**10),
+            "n_estimators": trial.suggest_int("n_estimators", 2**7, 2**11),
             "reg_alpha": trial.suggest_float("reg_alpha", 1e-3, 1e1),
             "reg_lambda": trial.suggest_float("reg_lambda", 1e-3, 1e1),
             "colsample_bytree": trial.suggest_float("colsample_bytree", 0.2, 1.0),
@@ -199,6 +199,54 @@ def instantiate_LGBM_Classifier(
     kwargs["verbose"] = -1
     params.update(filter_args(LGBMClassifier, **kwargs))
     model = LGBMClassifier(force_col_wise=True, objective="binary", **params)
+    return model
+
+
+def instantiate_XGB_Classifier(
+    trial: Trial, hyperparameters: str = "optimize", **kwargs
+):
+    if hyperparameters == "optimize":
+        params = {
+            "max_leaves": trial.suggest_int("max_leaves", 5, 50),
+            "learning_rate": trial.suggest_float("learning_rate", 1e-3, 1e-0),
+            "n_estimators": trial.suggest_int("n_estimators", 2**7, 2**11),
+            "reg_alpha": trial.suggest_float("reg_alpha", 1e-3, 1e1),
+            "reg_lambda": trial.suggest_float("reg_lambda", 1e-3, 1e1),
+            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.2, 1.0),
+            "booster": trial.suggest_categorical(
+                "booster", ["gbtree", "gblinear", "dart"]
+            ),
+        }
+    elif hyperparameters == "default":
+        params = {}
+    else:
+        raise ValueError("hyperparameters must be 'optimize' or 'default'")
+
+    kwargs["verbosity"] = 0
+    kwargs["tree_method "] = "approx"
+    params.update(filter_args(XGBClassifier, **kwargs))
+    model = XGBClassifier(objective="binary:logistic", **params)
+    return model
+
+
+def instantiate_CatBoost_Classifier(
+    trial: Trial, hyperparameters: str = "optimize", **kwargs
+):
+    if hyperparameters == "optimize":
+        params = {
+            "depth": trial.suggest_int("depth", 3, 10),
+            "learning_rate": trial.suggest_float("learning_rate", 1e-3, 1e-0),
+            "iterations": trial.suggest_int("iterations", 2**7, 2**11),
+            "l2_leaf_reg": trial.suggest_float("l2_leaf_reg", 1e-3, 1e1),
+            "colsample_bylevel": trial.suggest_float("colsample_bylevel", 0.2, 1.0),
+        }
+    elif hyperparameters == "default":
+        params = {}
+    else:
+        raise ValueError("hyperparameters must be 'optimize' or 'default'")
+
+    params.update(filter_args(CatBoostClassifier, **kwargs))
+    model = CatBoostClassifier(**params)
     return model
 
 
@@ -341,6 +389,8 @@ def instantiate_model(
                 "RF",
                 "ET",
                 "LGBM",
+                "XGB",
+                "CatBoost",
                 "KNN",
                 "ENet",
                 "PLR",
@@ -393,8 +443,11 @@ def instantiate_model(
     elif algorithm == "LGBM":
         model = instantiate_LGBM_Classifier(trial, hyperparameters, **kwargs)
 
-    # elif algorithm == "XGB":
-    #     model = instantiate_XGB_Classifier(trial, hyperparameters, **kwargs)
+    elif algorithm == "XGB":
+        model = instantiate_XGB_Classifier(trial, hyperparameters, **kwargs)
+
+    elif algorithm == "CatB":
+        model = instantiate_CatBoost_Classifier(trial, hyperparameters, **kwargs)
 
     elif algorithm == "KNN":
         model = instantiate_KNN_Classifier(trial, hyperparameters, **kwargs)
@@ -416,7 +469,7 @@ def instantiate_model(
 
     else:
         raise ValueError(
-            f"Unknown algorithm: {algorithm}.Valid algorithms are: 'LSVM', 'RBFSVM', 'NuLSVM', 'NuRBFSVM', 'SGD', 'MLP', 'RF', 'ET', 'LGBM', 'KNN', 'ENet', 'PLR', 'DLR', 'Ridge', 'LDA'."
+            f"Unknown algorithm: {algorithm}.Valid algorithms are: 'LSVM', 'RBFSVM', 'NuLSVM', 'NuRBFSVM', 'SGD', 'MLP', 'RF', 'ET', 'LGBM', 'XGB', 'CatB', 'KNN', 'ENet', 'PLR', 'DLR', 'Ridge', 'LDA'."
         )
 
     return model
