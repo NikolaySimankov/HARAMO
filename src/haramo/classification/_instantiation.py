@@ -198,7 +198,7 @@ def instantiate_LGBM_Classifier(
 
     kwargs["verbose"] = -1
     params.update(filter_args(LGBMClassifier, **kwargs))
-    model = LGBMClassifier(force_col_wise=True, objective="binary", **params)
+    model = LGBMClassifier(force_col_wise=True, objective="binary", verbosity=-1, **params)
     return model
 
 
