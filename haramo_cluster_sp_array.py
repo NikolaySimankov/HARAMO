@@ -167,47 +167,52 @@ if __name__ == "__main__":
             groups = intersect["Virus_Species"]
 
             sum = targets.apply(lambda x: x.sum(), axis=0).sort_values(ascending=False)
-            consistant_targets = sum[sum >= 80].index
-            
-            consistant_targets=consistant_targets[:15]
+            consistant_targets = sum[sum >= 40].index
 
-            kwargs_heavy = {"cpus": 8, "ram": "8GB", "time": "02:00:00"}
-            @ensure(
-            lambda i: os.path.exists(
-                logs / f"{source}_V{vcr[i][0]}_C{vcr[i][1]}_R{vcr[i][2]}.csv"
+            consistant_targets = consistant_targets[:15]
+
+            kwargs_heavy = {"cpus": 8, "ram": "8GB", "time": "04:00:00"}
+
+            @job(
+                name=f"Optimisation {args.folder}: {protein}_sp40",
+                array=len(consistant_targets),
+                array_throttle=4,
+                **kwargs_heavy,
             )
-            @job(name=f"Optimisation {args.folder}: {protein}_sp80", array=len(consistant_targets), array_throttle=10, **kwargs_heavy)
             def optimisation(i: int):
-            
-                target = consistant_targets[i]:
-                  try:
-                      log_path = logs / f"{args.folder}_{protein}_{target}.log"
-                      if not os.path.exists(log_path):
-                          y = targets[target]
+                target = consistant_targets[i]
+                try:
+                    log_path = logs / f"{args.folder}_{protein}_{target}.log"
+                    if not os.path.exists(log_path):
+                        y = targets[target]
 
-                          X.dropna(axis=1, inplace=True)
+                        X.dropna(axis=1, inplace=True)
 
-                          magic_now(
-                              X=X,
-                              y=y,
-                              groups=groups,
-                              scoring=mcc_scorer,
-                              algorithm="LGBM",
-                              scaler="standard",
-                              feature_selector="pvalue",
-                              hyperparameters="optimize",
-                              n_trials=args.n_trials,
-                              output_dir=output_dir,
-                              tag=f"_{protein}_{target}",
-                          )
+                        magic_now(
+                            X=X,
+                            y=y,
+                            groups=groups,
+                            scoring=mcc_scorer,
+                            algorithm="LGBM",
+                            scaler="standard",
+                            feature_selector="pvalue",
+                            hyperparameters="optimize",
+                            n_trials=args.n_trials,
+                            output_dir=output_dir,
+                            tag=f"_{protein}_{target}",
+                            n_jobs=8,
+                        )
 
-                          with open(log_path, "w") as file:
-                              file.write("done")
-                  except:
-                      pass
-                    
+                        with open(log_path, "w") as file:
+                            file.write("done")
+                except Exception as e:
+                    with open(log_path, "w") as file:
+                        import traceback
+
+                        file.write(traceback.format_exc())
+                    raise
+
             jobs.append(optimisation)
-            break
 
     schedule(
         *jobs,

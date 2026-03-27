@@ -9,15 +9,15 @@ import numpy as np
 
 import pickle
 
-from tqdm import tqdm
+from joblib import Parallel, delayed
 from typing import Union, Callable
 from os import PathLike
 
+from sklearn.base import clone
 from sklearn.utils.class_weight import compute_sample_weight
 from sklearn.model_selection import (
     StratifiedKFold,
     StratifiedGroupKFold,
-    cross_val_score,
 )
 from sklearn.metrics import get_scorer
 
@@ -28,19 +28,40 @@ from optuna import (
 
 from optuna.samplers import TPESampler
 from optuna.pruners import SuccessiveHalvingPruner
-from optuna.exceptions import TrialPruned
 from optuna.samplers import GridSampler
 
 from ._instantiation import instantiate_pipeline
 from ..utils import classification_report
-from ..utils import pruner_sampling
 
 #############
 # Functions #
 #############
 
 
-def pipeline_cross_val(pipeline, X, y, scoring, cv, sample_weight=None):
+def _score_fold(pipeline, X, y, scoring, train_index, test_index, sample_weight=None):
+    """Fit a cloned pipeline on one CV fold and return the score."""
+    pipe = clone(pipeline)
+    if isinstance(scoring, str):
+        scorer = get_scorer(scoring)
+    else:
+        scorer = scoring
+
+    X_train, X_test = X.iloc[train_index], X.iloc[test_index]
+    y_train, y_test = y.iloc[train_index], y.iloc[test_index]
+
+    if sample_weight is not None:
+        sample_weight_train = sample_weight.iloc[train_index]
+        try:
+            pipe.fit(X_train, y_train, model__sample_weight=sample_weight_train)
+        except:
+            pipe.fit(X_train, y_train)
+    else:
+        pipe.fit(X_train, y_train)
+
+    return scorer(pipe, X_test, y_test)
+
+
+def pipeline_cross_val(pipeline, X, y, scoring, cv, sample_weight=None, n_jobs=1):
     """
     Custom cross-validation function that maintains DataFrame format.
 
@@ -58,41 +79,22 @@ def pipeline_cross_val(pipeline, X, y, scoring, cv, sample_weight=None):
         Cross-validation splitting strategy.
     sample_weight : pd.Series, optional
         Sample weights to be used in training.
+    n_jobs : int, default=1
+        Number of parallel jobs for cross-validation folds.
 
     Returns:
     --------
     scores : list of float
         Array of scores of the estimator for each run of the cross-validation.
     """
-    if isinstance(scoring, str):
-        scorer = get_scorer(scoring)
-    else:
-        scorer = scoring
+    splits = list(cv)
 
-    scores = []
-
-    for train_index, test_index in cv:
-        X_train, X_test = (
-            X.iloc[train_index],
-            X.iloc[test_index],
+    scores = Parallel(n_jobs=n_jobs)(
+        delayed(_score_fold)(
+            pipeline, X, y, scoring, train_idx, test_idx, sample_weight
         )
-        y_train, y_test = (
-            y.iloc[train_index],
-            y.iloc[test_index],
-        )
-        if sample_weight is not None:
-            sample_weight_train, _ = (
-                sample_weight.iloc[train_index],
-                sample_weight.iloc[test_index],
-            )
-
-        try:
-            pipeline.fit(X_train, y_train, model__sample_weight=sample_weight_train)
-        except:
-            pipeline.fit(X_train, y_train)
-
-        score = scorer(pipeline, X_test, y_test)
-        scores.append(score)
+        for train_idx, test_idx in splits
+    )
 
     return scores
 
@@ -111,8 +113,8 @@ def objective(
     algorithm: Union[str, list] = "optimize",
     hyperparameters: str = "optimize",
     random_state: int = 42,
-    base: int = 2,
-    n_rungs: int = 5,
+    n_cv_jobs: int = 1,
+    groups: Union[np.ndarray, pd.Series, list] = None,
 ):
     """
     Objective function for hyperparameter optimization using cross-validation.
@@ -132,6 +134,12 @@ def objective(
         Random seed for reproducibility.
     sample_weight : Union[np.ndarray, pd.DataFrame], optional
         Sample weights to be used in training.
+    n_cv_jobs : int, default=1
+        Number of threads for the model's native parallelism.
+    groups : Union[np.ndarray, pd.Series, list], optional
+        Group labels for StratifiedGroupKFold. When provided, inner CV
+        ensures no group appears in both train and test, so hyperparameters
+        are optimized for generalization to unseen groups.
     Returns:
     --------
     float
@@ -148,33 +156,21 @@ def objective(
         random_state=random_state,
     )
 
-    strat_kfold_inner = StratifiedKFold(
-        n_splits=4,
-        shuffle=True,
-        random_state=random_state,
-    )
+    # Give CPU budget to the model's native threading (bypasses GIL)
+    # rather than parallelizing CV folds via joblib (GIL-limited)
+    try:
+        pipeline.set_params(model__n_jobs=n_cv_jobs)
+    except ValueError:
+        pass
 
-    # for n_samples in pruner_sampling(y_train, base, n_rungs):
-    #     X_train_batch = X_train.sample(n_samples, random_state=random_state)
-    #     y_train_batch = y_train.sample(n_samples, random_state=random_state)
-    #     w_train_batch = sample_weight.sample(n_samples, random_state=random_state)
-
-    # try:
-    #     pipeline.fit(X_train_batch, y_train_batch, model__sample_weight=w_train_batch)
-    # except:
-    #     pipeline.fit(X_train_batch, y_train_batch)
-
-    # if isinstance(scoring, str):
-    #     scorer = get_scorer(scoring)
-    # else:
-    #     scorer = scoring
-
-    # score = scorer(pipeline, X_test, y_test)
-
-    # trial.report(score, n_samples)
-
-    # if trial.should_prune():
-    #     raise TrialPruned()
+    if groups is not None:
+        strat_kfold_inner = StratifiedGroupKFold(n_splits=4)
+    else:
+        strat_kfold_inner = StratifiedKFold(
+            n_splits=4,
+            shuffle=True,
+            random_state=random_state,
+        )
 
     scores = pipeline_cross_val(
         pipeline,
@@ -182,7 +178,9 @@ def objective(
         y=y_train,
         sample_weight=sample_weight,
         scoring=scoring,
-        cv=strat_kfold_inner.split(X_train.values, y_train.astype("str")),
+        cv=strat_kfold_inner.split(
+            X_train.values, y_train.astype("str"), groups=groups
+        ),
     )
 
     score = np.mean(scores)
@@ -237,6 +235,80 @@ def get_search_space(feature_selector, scaler, algorithm):
     return search_space, n_trials
 
 
+def _train_fold(
+    fold_idx,
+    X,
+    y,
+    sample_weight,
+    train_index,
+    test_index,
+    scoring,
+    task,
+    feature_selector,
+    scaler,
+    algorithm,
+    hyperparameters,
+    random_state,
+    n_trials,
+    n_cv_jobs,
+    groups=None,
+):
+    """Run Optuna optimization for a single outer fold."""
+    X_train, X_test = X.iloc[train_index], X.iloc[test_index]
+    y_train, y_test = y.iloc[train_index], y.iloc[test_index]
+    w_train = sample_weight.iloc[train_index]
+    groups_train = groups.iloc[train_index] if groups is not None else None
+
+    if hyperparameters == "default":
+        search_space, n_trials = get_search_space(feature_selector, scaler, algorithm)
+        sampler = GridSampler(search_space)
+    else:
+        sampler = TPESampler(
+            seed=random_state,
+            multivariate=True,
+        )
+
+    study = create_study(
+        direction="maximize",
+        pruner=SuccessiveHalvingPruner(reduction_factor=2),
+        sampler=sampler,
+    )
+
+    study.optimize(
+        lambda trial: objective(
+            trial,
+            X_train=X_train,
+            y_train=y_train,
+            X_test=X_test,
+            y_test=y_test,
+            sample_weight=w_train,
+            scoring=scoring,
+            task=task,
+            feature_selector=feature_selector,
+            scaler=scaler,
+            algorithm=algorithm,
+            hyperparameters=hyperparameters,
+            random_state=random_state,
+            n_cv_jobs=n_cv_jobs,
+            groups=groups_train,
+        ),
+        n_trials=n_trials,
+        n_jobs=1,
+    )
+
+    model = instantiate_pipeline(
+        trial=study.best_trial,
+        feature_selector=feature_selector,
+        scaler=scaler,
+        algorithm=algorithm,
+        hyperparameters=hyperparameters,
+        random_state=random_state,
+    )
+
+    fold_name = f"fold_{fold_idx}"
+    return fold_name, model, study
+
+
 def train(
     X: Union[np.ndarray, pd.DataFrame],
     y: Union[np.ndarray, pd.Series, list],
@@ -249,7 +321,7 @@ def train(
     random_state: int = 42,
     n_trials: int = 100,
     groups: Union[np.ndarray, pd.Series, list] = None,
-    n_jobs: int = 8,
+    n_jobs: int = 16,
 ):
     """
     Train a model using stratified k-fold cross-validation and hyperparameter optimization.
@@ -276,19 +348,14 @@ def train(
         Random seed for reproducibility.
     n_trials : int, default=100
         Number of trials for hyperparameter optimization. igored if hyperparameters = "default"
-    n_jobs : int, default=8
-        Number of parallel jobs to run for hyperparameter optimization.
-    path : Union[str, PathLike[str]], optional
-        Path to save the study results.
+    n_jobs : int, default=16
+        Total number of parallel CPUs. Split as 4 outer folds × (n_jobs // 4) inner CV jobs.
 
     Returns:
     --------
     models : dict
         A dictionary containing trained models for each fold.
     """
-
-    models = {}
-    studies = {}
 
     sample_weight = pd.Series(
         compute_sample_weight(
@@ -306,78 +373,55 @@ def train(
             random_state=random_state,
         )
 
-    outer_fold = 0
+    splits = list(strat_kfold_outer.split(X, y.astype("str"), groups=groups))
+    n_outer_folds = len(splits)
+    n_cv_jobs = max(1, n_jobs // n_outer_folds)
 
-    for train_index, test_index in tqdm(
-        strat_kfold_outer.split(X, y.astype("str"), groups=groups)
-    ):
-        X_train, X_test = (
-            X.iloc[train_index],
-            X.iloc[test_index],
-        )
-        y_train, y_test = (
-            y.iloc[train_index],
-            y.iloc[test_index],
-        )
-        w_train, _ = (
-            sample_weight.iloc[train_index],
-            sample_weight.iloc[test_index],
-        )
-
-        outer_fold += 1
-
-        if hyperparameters == "default":
-            search_space, n_trials = get_search_space(
-                feature_selector, scaler, algorithm
-            )
-            sampler = GridSampler(search_space)
-        else:
-            sampler = TPESampler(
-                seed=random_state,
-                multivariate=True,
-            )
-
-        study = create_study(
-            direction="maximize",
-            pruner=SuccessiveHalvingPruner(reduction_factor=2),
-            sampler=sampler,
-        )
-
-        study.optimize(
-            lambda trial: objective(
-                trial,
-                X_train=X_train,
-                y_train=y_train,
-                X_test=X_test,
-                y_test=y_test,
-                sample_weight=w_train,
-                scoring=scoring,
-                task=task,
-                feature_selector=feature_selector,
-                scaler=scaler,
-                algorithm=algorithm,
-                hyperparameters=hyperparameters,
-                random_state=random_state,
-                base=2,
-                n_rungs=5,
-            ),
-            n_trials=n_trials,
-            n_jobs=n_jobs,
-        )
-
-        model = instantiate_pipeline(
-            trial=study.best_trial,
+    results = Parallel(n_jobs=n_outer_folds)(
+        delayed(_train_fold)(
+            fold_idx=fold_idx,
+            X=X,
+            y=y,
+            sample_weight=sample_weight,
+            train_index=train_index,
+            test_index=test_index,
+            scoring=scoring,
+            task=task,
             feature_selector=feature_selector,
             scaler=scaler,
             algorithm=algorithm,
             hyperparameters=hyperparameters,
             random_state=random_state,
+            n_trials=n_trials,
+            n_cv_jobs=n_cv_jobs,
+            groups=groups,
         )
+        for fold_idx, (train_index, test_index) in enumerate(splits, start=1)
+    )
 
-        models[f"fold_{outer_fold}"] = model
-        studies[f"fold_{outer_fold}"] = study
+    models = {name: model for name, model, _ in results}
+    studies = {name: study for name, _, study in results}
 
     return models, studies
+
+
+def _fit_and_predict(pipeline, X, y, sample_weight, train_index, test_index):
+    """Fit a cloned pipeline on a single CV split and return predictions."""
+    pipe = clone(pipeline)
+    X_train, X_test = X.iloc[train_index], X.iloc[test_index]
+    y_train, y_test = y.iloc[train_index], y.iloc[test_index]
+    w_train = sample_weight.iloc[train_index]
+
+    try:
+        pipe.fit(X_train, y_train, model__sample_weight=w_train)
+    except:
+        pipe.fit(X_train, y_train)
+
+    return pd.DataFrame(
+        np.column_stack((y_test, pipe.predict(X_test))),
+        columns=["true", "predicted"],
+        index=y_test.index,
+    )
 
 
 def nested_crossval(
@@ -386,6 +430,7 @@ def nested_crossval(
     pipelines: dict,
     random_state: int = 42,
     groups: Union[np.ndarray, pd.Series, list] = None,
+    n_jobs: int = 16,
 ):
     """
     Perform nested cross-validation on a set of models.
@@ -400,6 +445,8 @@ def nested_crossval(
         Dictionary of models to be evaluated, where keys are fold identifiers and values are classifier instances.
     groups : Union[np.ndarray, pd.Series, list], optional
         Group labels for the samples, by default None
+    n_jobs : int, default=16
+        Number of parallel jobs for cross-validation.
 
     Returns:
     --------
@@ -408,9 +455,6 @@ def nested_crossval(
     best_model : classifier instance
         The model corresponding to the best fold based on the Kappa score.
     """
-
-    validation = pd.DataFrame()
-    fold_predictions = {}
 
     sample_weight = pd.Series(
         compute_sample_weight(
@@ -428,73 +472,41 @@ def nested_crossval(
             random_state=random_state,
         )
 
-    for fold in tqdm(pipelines.keys()):
-        pipeline = pipelines[fold]
+    splits = list(strat_kfold_outer.split(X, y.astype("str"), groups=groups))
 
-        outer_fold = 0
+    # Build all (fold, split) tasks and run in parallel
+    tasks = [
+        (fold, pipelines[fold], train_idx, test_idx)
+        for fold in pipelines
+        for train_idx, test_idx in splits
+    ]
 
-        all_predicted_values = pd.DataFrame()
+    results = Parallel(n_jobs=n_jobs)(
+        delayed(_fit_and_predict)(pipe, X, y, sample_weight, train_idx, test_idx)
+        for _, pipe, train_idx, test_idx in tasks
+    )
 
-        for train_index, test_index in strat_kfold_outer.split(
-            X, y.astype("str"), groups=groups
-        ):
-            X_train, X_test = (
-                X.iloc[train_index],
-                X.iloc[test_index],
-            )
-            y_train, y_test = (
-                y.iloc[train_index],
-                y.iloc[test_index],
-            )
-            w_train, _ = (
-                sample_weight.iloc[train_index],
-                sample_weight.iloc[test_index],
-            )
-
-            outer_fold += 1
-
-            try:
-                pipeline.fit(
-                    X_train,
-                    y_train,
-                    model__sample_weight=w_train,
-                )
-
-            except:
-                pipeline.fit(
-                    X_train,
-                    y_train,
-                )
-
-            predicted_values = pd.DataFrame(
-                np.column_stack((y_test, pipeline.predict(X_test))),
-                columns=["true", "predicted"],
-                index=y_test.index,
-            )
-
-            all_predicted_values = pd.concat(
-                [
-                    all_predicted_values,
-                    predicted_values,
-                ],
-                axis=0,
-            )
+    # Aggregate results by fold
+    validation = pd.DataFrame()
+    n_splits = len(splits)
+    for i, fold in enumerate(pipelines):
+        fold_results = results[i * n_splits : (i + 1) * n_splits]
+        all_predicted_values = pd.concat(fold_results, axis=0)
 
         validation[fold] = classification_report(
             all_predicted_values["true"],
             all_predicted_values["predicted"],
         )
 
-        # Store predictions for each fold
-        fold_predictions[fold] = all_predicted_values
-
-        pipelines[fold] = pipeline
-
-    # Find the best fold based on MCC
+    # Find the best fold based on MCC and refit on all data
     best_fold = validation.T["MCC"].idxmax()
+    best_model = clone(pipelines[best_fold])
 
-    # Select the model corresponding to the best fold
-    best_model = pipelines[best_fold]
+    # Let the final refit use all cores on estimators that support n_jobs
+    try:
+        best_model.set_params(model__n_jobs=n_jobs)
+    except ValueError:
+        pass
 
     try:
         best_model.fit(
@@ -528,7 +540,7 @@ def magic_now(
     output_dir: Union[str, "PathLike[str]"] = None,
     groups: Union[np.ndarray, pd.Series, list] = None,
     tag: str = "",
-    n_jobs: int = 8,
+    n_jobs: int = 16,
 ):
 
     if not output_dir:
@@ -566,6 +578,7 @@ def magic_now(
         y=y,
         pipelines=pipelines,
         groups=groups,
+        n_jobs=n_jobs,
     )
 
     with open(

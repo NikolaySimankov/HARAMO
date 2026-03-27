@@ -198,7 +198,9 @@ def instantiate_LGBM_Classifier(
 
     kwargs["verbose"] = -1
     params.update(filter_args(LGBMClassifier, **kwargs))
-    model = LGBMClassifier(force_col_wise=True, objective="binary", verbosity=-1, **params)
+    model = LGBMClassifier(
+        force_col_wise=True, objective="binary", verbosity=-1, **params
+    )
     return model
 
 
@@ -223,7 +225,7 @@ def instantiate_XGB_Classifier(
         raise ValueError("hyperparameters must be 'optimize' or 'default'")
 
     kwargs["verbosity"] = 0
-    kwargs["tree_method "] = "approx"
+    kwargs["tree_method"] = "approx"
     params.update(filter_args(XGBClassifier, **kwargs))
     model = XGBClassifier(objective="binary:logistic", **params)
     return model
@@ -390,7 +392,7 @@ def instantiate_model(
                 "ET",
                 "LGBM",
                 "XGB",
-                "CatBoost",
+                "CatB",
                 "KNN",
                 "ENet",
                 "PLR",
