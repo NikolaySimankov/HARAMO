@@ -26,6 +26,12 @@ from ._scalers import (
     instantiate_scaler,
 )
 
+from ._dataset_reducer import (
+    reduce_dataset,
+    stage1_reduce,
+    stage2_refine,
+)
+
 __all__ = [
     "set_verbosity",
     "detect_dtype",
@@ -46,4 +52,7 @@ __all__ = [
     "instantiate_robust_scaler",
     "instantiate_identity_function",
     "instantiate_scaler",
+    "reduce_dataset",
+    "stage1_reduce",
+    "stage2_refine",
 ]

@@ -247,6 +247,7 @@ def instantiate_CatBoost_Classifier(
     else:
         raise ValueError("hyperparameters must be 'optimize' or 'default'")
 
+    kwargs["thread_count"] = kwargs.pop("n_jobs", 1)
     params.update(filter_args(CatBoostClassifier, **kwargs))
     model = CatBoostClassifier(**params)
     return model

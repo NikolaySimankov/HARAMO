@@ -4,6 +4,8 @@
 # Imports #
 ###########
 
+import time
+
 import pandas as pd
 import numpy as np
 
@@ -20,6 +22,7 @@ from sklearn.model_selection import (
     StratifiedGroupKFold,
 )
 from sklearn.metrics import get_scorer
+from sklearn.svm import SVC
 
 from optuna import (
     Trial,
@@ -31,14 +34,23 @@ from optuna.pruners import SuccessiveHalvingPruner
 from optuna.samplers import GridSampler
 
 from ._instantiation import instantiate_pipeline
-from ..utils import classification_report
+from ..utils import classification_report, reduce_dataset
 
 #############
 # Functions #
 #############
 
 
-def _score_fold(pipeline, X, y, scoring, train_index, test_index, sample_weight=None):
+def _score_fold(
+    pipeline,
+    X,
+    y,
+    scoring,
+    train_index,
+    test_index,
+    sample_weight: Union[np.ndarray, pd.DataFrame] = None,
+    random_state: int = 42,
+):
     """Fit a cloned pipeline on one CV fold and return the score."""
     pipe = clone(pipeline)
     if isinstance(scoring, str):
@@ -49,19 +61,45 @@ def _score_fold(pipeline, X, y, scoring, train_index, test_index, sample_weight=
     X_train, X_test = X.iloc[train_index], X.iloc[test_index]
     y_train, y_test = y.iloc[train_index], y.iloc[test_index]
 
+    reduced_index = reduce_dataset(
+        X=X_train,
+        y=y_train,
+        target_size=1000,
+        difficulty_model=SVC(
+            kernel="rbf", random_state=random_state, class_weight="balanced"
+        ),
+        stage2_shrink=0.9,
+        class_weight="balanced",
+        random_state=random_state,
+        verbose=False,
+    )
+
+    X_reduced = X_train.loc[reduced_index]
+    y_reduced = y_train.loc[reduced_index]
+
     if sample_weight is not None:
-        sample_weight_train = sample_weight.iloc[train_index]
+        w_train = sample_weight.loc[y_train.index]
+        sample_weight_reduced = w_train.loc[reduced_index]
         try:
-            pipe.fit(X_train, y_train, model__sample_weight=sample_weight_train)
+            pipe.fit(X_reduced, y_reduced, model__sample_weight=sample_weight_reduced)
         except:
-            pipe.fit(X_train, y_train)
+            pipe.fit(X_reduced, y_reduced)
     else:
-        pipe.fit(X_train, y_train)
+        pipe.fit(X_reduced, y_reduced)
 
     return scorer(pipe, X_test, y_test)
 
 
-def pipeline_cross_val(pipeline, X, y, scoring, cv, sample_weight=None, n_jobs=1):
+def pipeline_cross_val(
+    pipeline,
+    X,
+    y,
+    scoring,
+    cv,
+    sample_weight: Union[np.ndarray, pd.DataFrame] = None,
+    random_state: int = 42,
+    n_jobs: int = 1,
+):
     """
     Custom cross-validation function that maintains DataFrame format.
 
@@ -79,6 +117,8 @@ def pipeline_cross_val(pipeline, X, y, scoring, cv, sample_weight=None, n_jobs=1
         Cross-validation splitting strategy.
     sample_weight : pd.Series, optional
         Sample weights to be used in training.
+    random_state : int, default=42
+        Random seed for reproducibility.
     n_jobs : int, default=1
         Number of parallel jobs for cross-validation folds.
 
@@ -91,7 +131,7 @@ def pipeline_cross_val(pipeline, X, y, scoring, cv, sample_weight=None, n_jobs=1
 
     scores = Parallel(n_jobs=n_jobs)(
         delayed(_score_fold)(
-            pipeline, X, y, scoring, train_idx, test_idx, sample_weight
+            pipeline, X, y, scoring, train_idx, test_idx, sample_weight, random_state
         )
         for train_idx, test_idx in splits
     )
@@ -145,7 +185,7 @@ def objective(
     float
         Mean cross-validation score.
     """
-
+    t0 = time.time()
     pipeline = instantiate_pipeline(
         trial,
         task=task,
@@ -156,18 +196,19 @@ def objective(
         random_state=random_state,
     )
 
-    # Give CPU budget to the model's native threading (bypasses GIL)
-    # rather than parallelizing CV folds via joblib (GIL-limited)
     try:
         pipeline.set_params(model__n_jobs=n_cv_jobs)
-    except ValueError:
-        pass
+    except (ValueError, TypeError):
+        try:
+            pipeline.set_params(model__thread_count=n_cv_jobs)
+        except (ValueError, TypeError):
+            pass
 
     if groups is not None:
         strat_kfold_inner = StratifiedGroupKFold(n_splits=4)
     else:
         strat_kfold_inner = StratifiedKFold(
-            n_splits=4,
+            n_splits=3,
             shuffle=True,
             random_state=random_state,
         )
@@ -178,12 +219,12 @@ def objective(
         y=y_train,
         sample_weight=sample_weight,
         scoring=scoring,
-        cv=strat_kfold_inner.split(
-            X_train.values, y_train.astype("str"), groups=groups
-        ),
+        cv=strat_kfold_inner.split(X_train, y_train.astype("str"), groups=groups),
     )
 
     score = np.mean(scores)
+    t1 = time.time()
+    print(f"Time taken: {t1 - t0:.2f} s")
 
     return score
 
@@ -256,8 +297,16 @@ def _train_fold(
     """Run Optuna optimization for a single outer fold."""
     X_train, X_test = X.iloc[train_index], X.iloc[test_index]
     y_train, y_test = y.iloc[train_index], y.iloc[test_index]
-    w_train = sample_weight.iloc[train_index]
-    groups_train = groups.iloc[train_index] if groups is not None else None
+    w_train = sample_weight.loc[y_train.index]
+    if groups is not None:
+        groups_s = (
+            groups
+            if isinstance(groups, pd.Series)
+            else pd.Series(groups, index=y.index)
+        )
+        groups_train = groups_s.iloc[train_index]
+    else:
+        groups_train = None
 
     if hyperparameters == "default":
         search_space, n_trials = get_search_space(feature_selector, scaler, algorithm)
@@ -358,10 +407,8 @@ def train(
     """
 
     sample_weight = pd.Series(
-        compute_sample_weight(
-            class_weight="balanced",
-            y=y,
-        )
+        compute_sample_weight(class_weight="balanced", y=y),
+        index=y.index,
     )
 
     if groups is not None:
@@ -410,7 +457,7 @@ def _fit_and_predict(pipeline, X, y, sample_weight, train_index, test_index):
     pipe = clone(pipeline)
     X_train, X_test = X.iloc[train_index], X.iloc[test_index]
     y_train, y_test = y.iloc[train_index], y.iloc[test_index]
-    w_train = sample_weight.iloc[train_index]
+    w_train = sample_weight.loc[y_train.index]
 
     try:
         pipe.fit(X_train, y_train, model__sample_weight=w_train)
@@ -457,10 +504,8 @@ def nested_crossval(
     """
 
     sample_weight = pd.Series(
-        compute_sample_weight(
-            class_weight="balanced",
-            y=y,
-        )
+        compute_sample_weight(class_weight="balanced", y=y),
+        index=y.index,
     )
 
     if groups is not None:
@@ -505,8 +550,11 @@ def nested_crossval(
     # Let the final refit use all cores on estimators that support n_jobs
     try:
         best_model.set_params(model__n_jobs=n_jobs)
-    except ValueError:
-        pass
+    except (ValueError, TypeError):
+        try:
+            best_model.set_params(model__thread_count=n_jobs)
+        except (ValueError, TypeError):
+            pass
 
     try:
         best_model.fit(
