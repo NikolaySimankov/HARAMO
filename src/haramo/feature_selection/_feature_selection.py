@@ -44,11 +44,11 @@ def instantiate_variance_filter(trial: Trial, hyperparameters: str = "optimize")
     if hyperparameters == "optimize":
         params = {
             "threshold": trial.suggest_float(
-                "variance_threshold", 0.001, 0.05, step=0.001
+                "variance_threshold", 0.01, 0.05, step=0.005
             )
         }
     elif hyperparameters == "default":
-        params = {"threshold": 0.001}
+        params = {"threshold": 0.01}
     else:
         raise ValueError("hyperparameters must be 'optimize' or 'default'")
 
@@ -62,6 +62,7 @@ def instantiate_boruta_filter(
     task: str = "classification",
     random_state: int = 42,
     hyperparameters: str = "optimize",
+    n_jobs: int = 1,
 ):
 
     if hyperparameters == "optimize":
@@ -80,7 +81,7 @@ def instantiate_boruta_filter(
     params.update(
         {
             "random_state": random_state,
-            "n_jobs": 1,
+            "n_jobs": n_jobs,
         },
     )
 
@@ -148,6 +149,7 @@ def combined_feature_selector(
     task: str = "classification",
     hyperparameters: str = "optimize",
     random_state: int = 42,
+    n_jobs: int = 1,
 ):
     """
     Create a combined feature selector pipeline with variance, p-value, and Boruta filters.
@@ -185,6 +187,7 @@ def combined_feature_selector(
             task=task,
             hyperparameters=hyperparameters,
             random_state=random_state,
+            n_jobs=n_jobs,
         )
         steps.append(("boruta", boruta_filter))
 
@@ -204,6 +207,7 @@ def instantiate_feature_selector(
     method: Union[str, list] = "optimize",
     hyperparameters: str = "optimize",
     random_state: int = 42,
+    n_jobs: int = 1,
 ):
     """
     Instantiate a feature selector based on the trial suggestion.
@@ -239,6 +243,7 @@ def instantiate_feature_selector(
             task=task,
             hyperparameters=hyperparameters,
             random_state=random_state,
+            n_jobs=n_jobs,
         )
 
     elif method == "optimize":
@@ -247,6 +252,7 @@ def instantiate_feature_selector(
             task=task,
             hyperparameters=hyperparameters,
             random_state=random_state,
+            n_jobs=n_jobs,
         )
 
     else:

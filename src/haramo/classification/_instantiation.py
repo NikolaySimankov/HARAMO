@@ -363,6 +363,7 @@ def instantiate_LDA_Classifier(
 def instantiate_model(
     trial: Trial,
     random_state: int = 42,
+    n_jobs: int = 1,
     algorithm: Union[str, list] = "optimize",
     hyperparameters: str = "optimize",
 ):
@@ -416,7 +417,7 @@ def instantiate_model(
         "verbose": 0,
         "max_iter": 2**12,
         "random_state": random_state,
-        "n_jobs": 1,
+        "n_jobs": n_jobs,
     }
 
     if algorithm == "LSVM":
@@ -486,6 +487,7 @@ def instantiate_pipeline(
     algorithm: Union[str, list] = "optimize",
     hyperparameters: str = "optimize",
     random_state: int = 42,
+    n_jobs: int = 1,
 ):
 
     filter = instantiate_variance_filter(
@@ -499,6 +501,7 @@ def instantiate_pipeline(
         method=feature_selector,
         hyperparameters=hyperparameters,
         random_state=random_state,
+        n_jobs=n_jobs,
     )
 
     scaler = instantiate_scaler(
@@ -513,6 +516,7 @@ def instantiate_pipeline(
         algorithm=algorithm,
         hyperparameters=hyperparameters,
         random_state=random_state,
+        n_jobs=n_jobs,
     )
 
     pipeline = Pipeline(

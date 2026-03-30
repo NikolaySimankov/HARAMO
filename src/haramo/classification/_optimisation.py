@@ -4,8 +4,6 @@
 # Imports #
 ###########
 
-import time
-
 import pandas as pd
 import numpy as np
 
@@ -154,6 +152,7 @@ def objective(
     hyperparameters: str = "optimize",
     random_state: int = 42,
     n_cv_jobs: int = 1,
+    model_jobs: int = 1,
     groups: Union[np.ndarray, pd.Series, list] = None,
 ):
     """
@@ -175,7 +174,9 @@ def objective(
     sample_weight : Union[np.ndarray, pd.DataFrame], optional
         Sample weights to be used in training.
     n_cv_jobs : int, default=1
-        Number of threads for the model's native parallelism.
+        Number of parallel jobs for inner cross-validation folds.
+    model_jobs : int, default=1
+        Number of parallel jobs for the model's native parallelism.
     groups : Union[np.ndarray, pd.Series, list], optional
         Group labels for StratifiedGroupKFold. When provided, inner CV
         ensures no group appears in both train and test, so hyperparameters
@@ -185,7 +186,7 @@ def objective(
     float
         Mean cross-validation score.
     """
-    t0 = time.time()
+
     pipeline = instantiate_pipeline(
         trial,
         task=task,
@@ -194,18 +195,11 @@ def objective(
         algorithm=algorithm,
         hyperparameters=hyperparameters,
         random_state=random_state,
+        n_jobs=model_jobs,
     )
 
-    try:
-        pipeline.set_params(model__n_jobs=n_cv_jobs)
-    except (ValueError, TypeError):
-        try:
-            pipeline.set_params(model__thread_count=n_cv_jobs)
-        except (ValueError, TypeError):
-            pass
-
     if groups is not None:
-        strat_kfold_inner = StratifiedGroupKFold(n_splits=4)
+        strat_kfold_inner = StratifiedGroupKFold(n_splits=3)
     else:
         strat_kfold_inner = StratifiedKFold(
             n_splits=3,
@@ -220,11 +214,11 @@ def objective(
         sample_weight=sample_weight,
         scoring=scoring,
         cv=strat_kfold_inner.split(X_train, y_train.astype("str"), groups=groups),
+        random_state=random_state,
+        n_jobs=n_cv_jobs,
     )
 
     score = np.mean(scores)
-    t1 = time.time()
-    print(f"Time taken: {t1 - t0:.2f} s")
 
     return score
 
@@ -323,6 +317,19 @@ def _train_fold(
         sampler=sampler,
     )
 
+    if n_cv_jobs < 2:
+        _model_jobs = n_cv_jobs
+        _inner_jobs = 1
+    elif n_cv_jobs == 3:
+        _model_jobs = 1
+        _inner_jobs = n_cv_jobs
+    elif n_cv_jobs < 6:
+        _model_jobs = n_cv_jobs
+        _inner_jobs = 1
+    else:
+        _model_jobs = n_cv_jobs // 3
+        _inner_jobs = 3
+
     study.optimize(
         lambda trial: objective(
             trial,
@@ -338,7 +345,8 @@ def _train_fold(
             algorithm=algorithm,
             hyperparameters=hyperparameters,
             random_state=random_state,
-            n_cv_jobs=n_cv_jobs,
+            n_cv_jobs=_inner_jobs,
+            model_jobs=_model_jobs,
             groups=groups_train,
         ),
         n_trials=n_trials,
@@ -546,15 +554,6 @@ def nested_crossval(
     # Find the best fold based on MCC and refit on all data
     best_fold = validation.T["MCC"].idxmax()
     best_model = clone(pipelines[best_fold])
-
-    # Let the final refit use all cores on estimators that support n_jobs
-    try:
-        best_model.set_params(model__n_jobs=n_jobs)
-    except (ValueError, TypeError):
-        try:
-            best_model.set_params(model__thread_count=n_jobs)
-        except (ValueError, TypeError):
-            pass
 
     try:
         best_model.fit(
