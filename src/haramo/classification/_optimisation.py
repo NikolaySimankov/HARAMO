@@ -10,7 +10,7 @@ import numpy as np
 import pickle
 
 from joblib import Parallel, delayed
-from typing import Union, Callable
+from typing import Union, Callable, Dict, List, Optional
 from os import PathLike
 
 from sklearn.base import clone
@@ -33,6 +33,7 @@ from optuna.samplers import GridSampler
 
 from ._instantiation import instantiate_pipeline
 from ..utils import classification_report, reduce_dataset
+from ..feature_selection import select_best_dataset_combo
 
 #############
 # Functions #
@@ -574,7 +575,7 @@ def nested_crossval(
 
 
 def magic_now(
-    X: Union[np.ndarray, pd.DataFrame],
+    X: Union[np.ndarray, pd.DataFrame, List[pd.DataFrame], Dict[str, pd.DataFrame]],
     y: Union[np.ndarray, pd.Series, list],
     scoring: Union[str, Callable] = "balanced_accuracy",
     task: str = "classification",
@@ -593,17 +594,50 @@ def magic_now(
     if not output_dir:
         raise ValueError("Output directory must be specified.")
 
-    results = output_dir / "results"
-    results.mkdir(exist_ok=True)
+    results_dir = output_dir / "results"
+    results_dir.mkdir(exist_ok=True)
 
-    models = output_dir / "models"
-    models.mkdir(exist_ok=True)
+    models_dir = output_dir / "models"
+    models_dir.mkdir(exist_ok=True)
 
-    trials = output_dir / "trials"
-    trials.mkdir(exist_ok=True)
+    trials_dir = output_dir / "trials"
+    trials_dir.mkdir(exist_ok=True)
 
-    plots = output_dir / "plots"
-    plots.mkdir(exist_ok=True)
+    plots_dir = output_dir / "plots"
+    plots_dir.mkdir(exist_ok=True)
+
+    if isinstance(X, (list, dict)):
+        if isinstance(X, list):
+            if len(X) == 0:
+                raise ValueError("X must contain at least one DataFrame.")
+            datasets = {f"dataset_{i}": df for i, df in enumerate(X)}
+        else:
+            if len(X) == 0:
+                raise ValueError("X must contain at least one DataFrame.")
+            datasets = X
+
+        best_combo_name, X, scores_series = select_best_dataset_combo(
+            datasets=datasets,
+            y=y,
+            scoring=scoring,
+            task=task,
+            random_state=random_state,
+            groups=groups,
+            n_jobs=n_jobs,
+        )
+
+        print(
+            f"[Dataset Selection] Best combination : {best_combo_name!r} "
+            f"(score = {scores_series[best_combo_name]:.4f})"
+        )
+        print("[Dataset Selection] Full ranking:")
+        print(scores_series.to_string())
+
+        scores_series.to_csv(
+            results_dir / f"dataset_selection{tag}.tsv",
+            sep="\t",
+            header=True,
+        )
 
     pipelines, studies = train(
         X=X,
@@ -629,17 +663,17 @@ def magic_now(
     )
 
     with open(
-        models / f"pipelines{tag}.pkl",
+        models_dir / f"pipelines{tag}.pkl",
         "wb",
     ) as handle:
         pickle.dump(pipeline, handle)
 
     with open(
-        trials / f"studies{tag}.pkl",
+        trials_dir / f"studies{tag}.pkl",
         "wb",
     ) as handle:
         pickle.dump(studies, handle)
 
-    validation.to_csv(results / f"validation{tag}.tsv", sep="\t", index=True)
+    validation.to_csv(results_dir / f"validation{tag}.tsv", sep="\t", index=True)
 
     return validation, pipeline, studies

@@ -44,7 +44,7 @@ def instantiate_variance_filter(trial: Trial, hyperparameters: str = "optimize")
     if hyperparameters == "optimize":
         params = {
             "threshold": trial.suggest_float(
-                "variance_threshold", 0.01, 0.05, step=0.005
+                "variance_threshold", 0.001, 0.051, step=0.01
             )
         }
     elif hyperparameters == "default":
