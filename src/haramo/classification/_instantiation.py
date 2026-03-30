@@ -19,10 +19,7 @@ from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.pipeline import Pipeline
 
 from ..utils import instantiate_scaler, filter_args
-from ..feature_selection import (
-    instantiate_feature_selector,
-    instantiate_variance_filter,
-)
+from ..feature_selection import instantiate_feature_selector
 
 from optuna import Trial
 
@@ -490,11 +487,6 @@ def instantiate_pipeline(
     n_jobs: int = 1,
 ):
 
-    filter = instantiate_variance_filter(
-        trial,
-        hyperparameters=hyperparameters,
-    )
-
     feature_selector = instantiate_feature_selector(
         trial,
         task=task,
@@ -521,7 +513,6 @@ def instantiate_pipeline(
 
     pipeline = Pipeline(
         [
-            ("filter", filter),
             ("feature_selector", feature_selector),
             ("scaler", scaler),
             ("model", model),

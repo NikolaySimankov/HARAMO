@@ -226,6 +226,11 @@ def instantiate_feature_selector(
         The instantiated feature selector object.
     """
 
+    # Variance filter is always the first step, regardless of the selector chosen.
+    variance_filter = instantiate_variance_filter(
+        trial, hyperparameters=hyperparameters
+    )
+
     if isinstance(method, list):
         method = trial.suggest_categorical("feature_selection_method", method)
     else:
@@ -260,4 +265,9 @@ def instantiate_feature_selector(
             f"Invalid feature selection method: {method}. Valid methods are: None, 'pvalue', 'boruta', 'optimize'."
         )
 
-    return selector
+    return Pipeline(
+        [
+            ("filter", variance_filter),
+            ("feature_selector", selector),
+        ]
+    )

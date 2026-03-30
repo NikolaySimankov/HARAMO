@@ -33,7 +33,7 @@ from optuna.samplers import GridSampler
 
 from ._instantiation import instantiate_pipeline
 from ..utils import classification_report, reduce_dataset
-from ..feature_selection import select_best_dataset_combo
+from ..feature_selection import select_best_dataset_combo, select_best_feature_selector
 
 #############
 # Functions #
@@ -289,7 +289,24 @@ def _train_fold(
     n_cv_jobs,
     groups=None,
 ):
-    """Run Optuna optimization for a single outer fold."""
+    """
+    Run two-phase Optuna optimisation for a single outer fold.
+
+    Phase 1 – Feature-selection HPO
+        A small study (5 / 10 / 15 trials) finds the best feature-selection
+        configuration using a fixed default pipeline (StandardScaler + LGBM).
+        All available CPUs are forwarded to boruta's random-forest so the main
+        bottleneck benefits fully from parallelism.  The winning selector is
+        fitted on X_train and used to transform both splits before phase 2.
+
+    Phase 2 – Scaler + model HPO
+        The main study optimises scaler and algorithm hyperparameters on the
+        already-selected feature matrix (feature_selector=None), so the search
+        space and compute are entirely dedicated to the model.
+
+    The final pipeline merges both phases as a standard sklearn Pipeline so
+    nested_crossval can clone and refit it correctly on fresh splits.
+    """
     X_train, X_test = X.iloc[train_index], X.iloc[test_index]
     y_train, y_test = y.iloc[train_index], y.iloc[test_index]
     w_train = sample_weight.loc[y_train.index]
@@ -303,8 +320,29 @@ def _train_fold(
     else:
         groups_train = None
 
+    # ------------------------------------------------------------------ #
+    # Phase 1 – feature-selection HPO                                     #
+    # n_cv_jobs flows entirely to boruta's RF; trials run sequentially.  #
+    # ------------------------------------------------------------------ #
+    fs_pipeline = select_best_feature_selector(
+        X_train=X_train,
+        y_train=y_train,
+        feature_selector=feature_selector,
+        task=task,
+        scoring=scoring,
+        random_state=random_state,
+        groups=groups_train,
+        n_jobs=n_cv_jobs,
+    )
+    X_train_sel = fs_pipeline.transform(X_train)
+    X_test_sel  = fs_pipeline.transform(X_test)
+
+    # ------------------------------------------------------------------ #
+    # Phase 2 – scaler + model HPO on pre-selected features               #
+    # feature_selector=None: X is already filtered, no FS in search space #
+    # ------------------------------------------------------------------ #
     if hyperparameters == "default":
-        search_space, n_trials = get_search_space(feature_selector, scaler, algorithm)
+        search_space, n_trials = get_search_space(None, scaler, algorithm)
         sampler = GridSampler(search_space)
     else:
         sampler = TPESampler(
@@ -334,14 +372,14 @@ def _train_fold(
     study.optimize(
         lambda trial: objective(
             trial,
-            X_train=X_train,
+            X_train=X_train_sel,
             y_train=y_train,
-            X_test=X_test,
+            X_test=X_test_sel,
             y_test=y_test,
             sample_weight=w_train,
             scoring=scoring,
             task=task,
-            feature_selector=feature_selector,
+            feature_selector=None,  # already applied in phase 1
             scaler=scaler,
             algorithm=algorithm,
             hyperparameters=hyperparameters,
@@ -354,17 +392,24 @@ def _train_fold(
         n_jobs=1,
     )
 
-    model = instantiate_pipeline(
+    # ------------------------------------------------------------------ #
+    # Build final pipeline: FS steps (phase 1) + scaler + model (phase 2) #
+    # ------------------------------------------------------------------ #
+    phase2_pipeline = instantiate_pipeline(
         trial=study.best_trial,
-        feature_selector=feature_selector,
+        feature_selector=None,
         scaler=scaler,
         algorithm=algorithm,
         hyperparameters=hyperparameters,
         random_state=random_state,
     )
+    final_pipeline = Pipeline(
+        fs_pipeline.steps
+        + [s for s in phase2_pipeline.steps if s[0] in ("scaler", "model")]
+    )
 
     fold_name = f"fold_{fold_idx}"
-    return fold_name, model, study
+    return fold_name, final_pipeline, study
 
 
 def train(
@@ -606,6 +651,9 @@ def magic_now(
     plots_dir = output_dir / "plots"
     plots_dir.mkdir(exist_ok=True)
 
+    # ------------------------------------------------------------------ #
+    # Dataset selection (runs only when X is a list or dict of DataFrames) #
+    # ------------------------------------------------------------------ #
     if isinstance(X, (list, dict)):
         if isinstance(X, list):
             if len(X) == 0:
