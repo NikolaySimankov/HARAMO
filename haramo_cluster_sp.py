@@ -117,17 +117,29 @@ if __name__ == "__main__":
     all_targets = all_targets[consistent_targets]
     all_targets.reset_index(inplace=True)
 
-    # Load the Biophysical properties file into a DataFrame
-    X = pd.read_csv(data / "predomics_biophys_V2.tsv", sep="\t", index_col="Prot_ID")
+    # Load the feature DataFrames
+    feature_files = {
+        "b2btools":  "X_b2btools.tsv",
+        "netsurfp":  "X_netsurfp.tsv",
+        "protlearn": "X_protlearn.tsv",
+        "residue":   "X_residue.tsv",
+    }
+    all_X = {
+        name: pd.read_csv(data / fname, sep="\t", index_col="Prot_ID")
+        for name, fname in feature_files.items()
+    }
 
     # Load the Protein metadata file into a DataFrame
     taxo = pd.read_csv(
         data / "clustered_proteins_V5.2.tsv", sep="\t", index_col="Prot_ID"
     )
 
-    # Merge the Biophysical properties and Protein metadata DataFrames
-    joined = pd.merge(taxo, X, how="inner", left_index=True, right_index=True)
-    joined = joined[joined["Definitive_name"].notna()]
+    # Restrict metadata to proteins present in every feature dataset and with a known name
+    common_index = taxo.index
+    for X in all_X.values():
+        common_index = common_index.intersection(X.index)
+    taxo = taxo.loc[common_index]
+    taxo = taxo[taxo["Definitive_name"].notna()]
 
     # Split comma-separated values and remove duplicates
     proteins = [
@@ -147,24 +159,30 @@ if __name__ == "__main__":
 
         # forbid matches where the phrase is followed by another word (e.g. "... complex")
         pattern = rf"\b{re.escape(protein)}\b(?!\s+\w)"
-        biophys = joined.loc[
-            joined["Definitive_name"].str.contains(
+        biophys = taxo.loc[
+            taxo["Definitive_name"].str.contains(
                 pattern, case=False, regex=True, na=False
             )
         ]
-        biophys.reset_index(inplace=True)
+        biophys = biophys.reset_index()[["Prot_ID", "Virus_Species"]]
 
         if len(biophys) >= 500:
 
             intersect = pd.merge(biophys, all_targets, how="inner", on="Virus_Species")
-            X = intersect[["Prot_ID"] + list(X.columns)]
-            X.set_index("Prot_ID", inplace=True)
+
+            prot_ids = intersect["Prot_ID"]
+
+            # Align each feature dataset to the intersected protein IDs; drop all-NaN columns
+            datasets = {
+                name: X.loc[prot_ids].dropna(axis=1, how="all")
+                for name, X in all_X.items()
+            }
 
             targets = intersect[["Prot_ID"] + list(all_targets.columns)]
             targets.drop(columns=["Virus_Species"], inplace=True)
             targets.set_index("Prot_ID", inplace=True)
 
-            groups = intersect["Virus_Species"]
+            groups = intersect.set_index("Prot_ID")["Virus_Species"]
 
             sum = targets.apply(lambda x: x.sum(), axis=0).sort_values(ascending=False)
             consistant_targets = sum[sum >= 200].index
@@ -180,10 +198,8 @@ if __name__ == "__main__":
                         if not os.path.exists(log_path):
                             y = targets[target]
 
-                            X.dropna(axis=1, inplace=True)
-
                             magic_now(
-                                X=X,
+                                X=datasets,
                                 y=y,
                                 groups=groups,
                                 scoring=mcc_scorer,
