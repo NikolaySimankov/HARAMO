@@ -22,6 +22,8 @@ from sklearn.model_selection import (
 from sklearn.metrics import get_scorer
 from sklearn.svm import SVC
 
+from sklearn.pipeline import Pipeline
+
 from optuna import (
     Trial,
     create_study,
@@ -307,6 +309,7 @@ def _train_fold(
     The final pipeline merges both phases as a standard sklearn Pipeline so
     nested_crossval can clone and refit it correctly on fresh splits.
     """
+
     X_train, X_test = X.iloc[train_index], X.iloc[test_index]
     y_train, y_test = y.iloc[train_index], y.iloc[test_index]
     w_train = sample_weight.loc[y_train.index]
@@ -321,9 +324,10 @@ def _train_fold(
         groups_train = None
 
     # ------------------------------------------------------------------ #
-    # Phase 1 – feature-selection HPO                                     #
+    # Phase 1 – feature-selection HPO                                    #
     # n_cv_jobs flows entirely to boruta's RF; trials run sequentially.  #
     # ------------------------------------------------------------------ #
+
     fs_pipeline = select_best_feature_selector(
         X_train=X_train,
         y_train=y_train,
@@ -335,12 +339,12 @@ def _train_fold(
         n_jobs=n_cv_jobs,
     )
     X_train_sel = fs_pipeline.transform(X_train)
-    X_test_sel  = fs_pipeline.transform(X_test)
+    X_test_sel = fs_pipeline.transform(X_test)
 
-    # ------------------------------------------------------------------ #
+    # ------------------------------------------------------------------- #
     # Phase 2 – scaler + model HPO on pre-selected features               #
     # feature_selector=None: X is already filtered, no FS in search space #
-    # ------------------------------------------------------------------ #
+    # ------------------------------------------------------------------- #
     if hyperparameters == "default":
         search_space, n_trials = get_search_space(None, scaler, algorithm)
         sampler = GridSampler(search_space)
@@ -651,9 +655,6 @@ def magic_now(
     plots_dir = output_dir / "plots"
     plots_dir.mkdir(exist_ok=True)
 
-    # ------------------------------------------------------------------ #
-    # Dataset selection (runs only when X is a list or dict of DataFrames) #
-    # ------------------------------------------------------------------ #
     if isinstance(X, (list, dict)):
         if isinstance(X, list):
             if len(X) == 0:
@@ -687,41 +688,41 @@ def magic_now(
             header=True,
         )
 
-    pipelines, studies = train(
-        X=X,
-        y=y,
-        scoring=scoring,
-        task=task,
-        feature_selector=feature_selector,
-        scaler=scaler,
-        algorithm=algorithm,
-        hyperparameters=hyperparameters,
-        random_state=random_state,
-        n_trials=n_trials,
-        groups=groups,
-        n_jobs=n_jobs,
-    )
+    # pipelines, studies = train(
+    #     X=X,
+    #     y=y,
+    #     scoring=scoring,
+    #     task=task,
+    #     feature_selector=feature_selector,
+    #     scaler=scaler,
+    #     algorithm=algorithm,
+    #     hyperparameters=hyperparameters,
+    #     random_state=random_state,
+    #     n_trials=n_trials,
+    #     groups=groups,
+    #     n_jobs=n_jobs,
+    # )
 
-    validation, pipeline = nested_crossval(
-        X=X,
-        y=y,
-        pipelines=pipelines,
-        groups=groups,
-        n_jobs=n_jobs,
-    )
+    # validation, pipeline = nested_crossval(
+    #     X=X,
+    #     y=y,
+    #     pipelines=pipelines,
+    #     groups=groups,
+    #     n_jobs=n_jobs,
+    # )
 
-    with open(
-        models_dir / f"pipelines{tag}.pkl",
-        "wb",
-    ) as handle:
-        pickle.dump(pipeline, handle)
+    # with open(
+    #     models_dir / f"pipelines{tag}.pkl",
+    #     "wb",
+    # ) as handle:
+    #     pickle.dump(pipeline, handle)
 
-    with open(
-        trials_dir / f"studies{tag}.pkl",
-        "wb",
-    ) as handle:
-        pickle.dump(studies, handle)
+    # with open(
+    #     trials_dir / f"studies{tag}.pkl",
+    #     "wb",
+    # ) as handle:
+    #     pickle.dump(studies, handle)
 
-    validation.to_csv(results_dir / f"validation{tag}.tsv", sep="\t", index=True)
+    # validation.to_csv(results_dir / f"validation{tag}.tsv", sep="\t", index=True)
 
-    return validation, pipeline, studies
+    # return validation, pipeline, studies

@@ -14,6 +14,9 @@ from joblib import Parallel, delayed
 from sklearn.base import clone
 from sklearn.metrics import get_scorer
 from sklearn.model_selection import StratifiedGroupKFold, StratifiedKFold
+from sklearn.svm import SVC
+
+from ..utils import reduce_dataset
 
 #############
 # Functions #
@@ -39,9 +42,9 @@ def _build_default_pipeline(task: str, random_state: int):
     return instantiate_pipeline(
         trial,
         task=task,
-        feature_selector=None,    # identity – no suggest call
-        scaler="standard",         # concrete string – no suggest call
-        algorithm="LGBM",          # concrete string – no suggest call
+        feature_selector="pvalue",  # identity – no suggest call
+        scaler="standard",  # concrete string – no suggest call
+        algorithm="RBFSVM",  # concrete string – no suggest call
         hyperparameters="default",
         random_state=random_state,
         n_jobs=1,
@@ -76,10 +79,10 @@ def _score_dataset_combo(
         scorer = scoring
 
     if groups is not None:
-        cv = StratifiedGroupKFold(n_splits=4)
+        cv = StratifiedGroupKFold(n_splits=3)
         splits = list(cv.split(X_combo, y.astype(str), groups=groups))
     else:
-        cv = StratifiedKFold(n_splits=4, shuffle=True, random_state=random_state)
+        cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=random_state)
         splits = list(cv.split(X_combo, y.astype(str)))
 
     def _eval_fold(train_idx, test_idx):
@@ -87,7 +90,19 @@ def _score_dataset_combo(
         X_tr, X_te = X_combo.iloc[train_idx], X_combo.iloc[test_idx]
         y_tr, y_te = y.iloc[train_idx], y.iloc[test_idx]
         try:
-            pipe.fit(X_tr, y_tr)
+            reduced_index = reduce_dataset(
+                X=X_tr,
+                y=y_tr,
+                target_size=1000,
+                difficulty_model=SVC(
+                    kernel="rbf", random_state=random_state, class_weight="balanced"
+                ),
+                stage2_shrink=0.9,
+                class_weight="balanced",
+                random_state=random_state,
+                verbose=False,
+            )
+            pipe.fit(X_tr.loc[reduced_index], y_tr.loc[reduced_index])
             return scorer(pipe, X_te, y_te)
         except Exception:
             return np.nan
@@ -104,7 +119,7 @@ def select_best_dataset_combo(
     random_state: int = 42,
     groups=None,
     n_jobs: int = 1,
-    max_combos: int = 31,
+    max_combos: int = 300,
 ) -> Tuple[str, pd.DataFrame, pd.Series]:
     """
     Enumerate non-empty subsets of *datasets*, score each with a default
@@ -167,9 +182,7 @@ def select_best_dataset_combo(
 
     def _score_one(combo: tuple):
         X_combo = pd.concat([datasets[name] for name in combo], axis=1)
-        score = _score_dataset_combo(
-            X_combo, y, scoring, task, random_state, groups
-        )
+        score = _score_dataset_combo(X_combo, y, scoring, task, random_state, groups)
         return combo, score
 
     results = Parallel(n_jobs=n_jobs)(
@@ -177,10 +190,7 @@ def select_best_dataset_combo(
     )
 
     scores_dict = {" + ".join(combo): score for combo, score in results}
-    scores = (
-        pd.Series(scores_dict, name="score")
-        .sort_values(ascending=False)
-    )
+    scores = pd.Series(scores_dict, name="score").sort_values(ascending=False)
 
     best_combo, _ = max(
         results,

@@ -13,6 +13,9 @@ from sklearn.base import clone
 from sklearn.metrics import get_scorer
 from sklearn.model_selection import StratifiedKFold, StratifiedGroupKFold
 from sklearn.pipeline import Pipeline
+from sklearn.svm import SVC
+
+from ..utils import reduce_dataset
 
 from optuna import create_study
 from optuna.samplers import TPESampler
@@ -114,7 +117,19 @@ def _fs_objective(
         X_tr, X_val = X_train.iloc[train_idx], X_train.iloc[val_idx]
         y_tr, y_val = y_train.iloc[train_idx], y_train.iloc[val_idx]
         try:
-            pipe.fit(X_tr, y_tr)
+            reduced_index = reduce_dataset(
+                X=X_tr,
+                y=y_tr,
+                target_size=1000,
+                difficulty_model=SVC(
+                    kernel="rbf", random_state=random_state, class_weight="balanced"
+                ),
+                stage2_shrink=0.9,
+                class_weight="balanced",
+                random_state=random_state,
+                verbose=False,
+            )
+            pipe.fit(X_tr.loc[reduced_index], y_tr.loc[reduced_index])
             scores.append(scorer(pipe, X_val, y_val))
         except Exception:
             scores.append(np.nan)

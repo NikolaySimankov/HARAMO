@@ -73,7 +73,7 @@ def get_parser():
         default="slurm",
         type=str,
         dest="backend",
-        help="backend to use for the parallelization of the jobs",
+        help="backend to use for the parallelization of the jobs slurm, async or dummy",
         required=True,
     )
 
@@ -110,8 +110,9 @@ if __name__ == "__main__":
 
     # Load the target file into a DataFrame
     all_targets = pd.read_csv(
-        data / "Plant_Viruses_host_species.tsv", sep="\t", index_col="Virus_Species"
+        data / "DATABASE_SEED.tsv", sep="\t", index_col="Virus_Species"
     )
+
     counts = all_targets.apply(sum)
     consistent_targets = counts[counts >= 8].index
     all_targets = all_targets[consistent_targets]
@@ -119,11 +120,16 @@ if __name__ == "__main__":
 
     # Load the feature DataFrames
     feature_files = {
-        "b2btools":  "X_b2btools.tsv",
-        "netsurfp":  "X_netsurfp.tsv",
-        "protlearn": "X_protlearn.tsv",
-        "residue":   "X_residue.tsv",
+        "ctd": "X_ctd.tsv",
+        "ctdc": "X_ctdc.tsv",
+        "ctdt": "X_ctdt.tsv",
+        "ctdd": "X_ctdd.tsv",
+        "aac": "X_aac.tsv",
+        "b2btools": "X_b2btools.tsv",
+        "netsurfp": "X_netsurfp.tsv",
+        "residue": "X_residue.tsv",
     }
+
     all_X = {
         name: pd.read_csv(data / fname, sep="\t", index_col="Prot_ID")
         for name, fname in feature_files.items()
@@ -143,16 +149,16 @@ if __name__ == "__main__":
 
     # Split comma-separated values and remove duplicates
     proteins = [
-        "DNA replication protein",
+        # "DNA replication protein",
         "RNA-dependent RNA polymerase",
-        "Reverse transcriptase",
-        "Coat protein",
+        # "Reverse transcriptase",
+        # "Coat protein",
         "Movement protein",
-        "Transactivator/viroplasmin protein",
+        # "Transactivator/viroplasmin protein",
         "RNA silencing suppressor",
-        "Vector transmission protein",
-        "RNA-dependent RNA polymerase complex",
-        "Reverse transcriptase complex",
+        # "Vector transmission protein",
+        # "RNA-dependent RNA polymerase complex",
+        # "Reverse transcriptase complex",
     ]
 
     for protein in proteins:
@@ -187,7 +193,7 @@ if __name__ == "__main__":
             sum = targets.apply(lambda x: x.sum(), axis=0).sort_values(ascending=False)
             consistant_targets = sum[sum >= 200].index
 
-            kwargs_heavy = {"cpus": 12, "ram": "32GB", "time": "03:00:00"}
+            kwargs_heavy = {"cpus": 12, "ram": "16GB", "time": "01:00:00"}
 
             @job(name=f"Optimisation {args.folder}: {protein}_sp200", **kwargs_heavy)
             def optimisation():
@@ -203,7 +209,7 @@ if __name__ == "__main__":
                                 y=y,
                                 groups=groups,
                                 scoring=mcc_scorer,
-                                algorithm=["RBFSVM","LGBM"],
+                                algorithm=["RBFSVM", "LGBM"],
                                 scaler="standard",
                                 feature_selector="boruta",
                                 hyperparameters="default",
@@ -213,18 +219,19 @@ if __name__ == "__main__":
                                 n_jobs=12,
                             )
 
-                            with open(log_path, "w") as file:
-                                file.write("done")
+                    #         with open(log_path, "w") as file:
+                    #             file.write("done")
 
                     except Exception as e:
-                        with open(log_path, "w") as file:
-                            import traceback
-    
-                            file.write(traceback.format_exc())
+                        #     with open(log_path, "w") as file:
+                        #         import traceback
+
+                        #         file.write(traceback.format_exc())
                         raise
                     break
+
             jobs.append(optimisation)
-        
+
     schedule(
         *jobs,
         name="Haramo4PredOmics",

@@ -44,7 +44,7 @@ def instantiate_variance_filter(trial: Trial, hyperparameters: str = "optimize")
     if hyperparameters == "optimize":
         params = {
             "threshold": trial.suggest_float(
-                "variance_threshold", 0.001, 0.051, step=0.01
+                "variance_threshold", 0.01, 0.05, step=0.01
             )
         }
     elif hyperparameters == "default":
@@ -67,9 +67,9 @@ def instantiate_boruta_filter(
 
     if hyperparameters == "optimize":
         params = {
-            "perc": trial.suggest_int("perc", 80, 101, step=10),
+            "perc": trial.suggest_int("perc", 80, 100, step=10),
             "max_leaf_nodes": trial.suggest_int(
-                "boruta_max_leaf_nodes", 10, 51, step=10
+                "boruta_max_leaf_nodes", 10, 50, step=10
             ),
         }
 
@@ -226,20 +226,21 @@ def instantiate_feature_selector(
         The instantiated feature selector object.
     """
 
-    # Variance filter is always the first step, regardless of the selector chosen.
+    if isinstance(method, list):
+        method = trial.suggest_categorical("feature_selection_method", method)
+
+    # method=None means the data is already filtered (phase 2 of _train_fold).
+    # Return a pure identity with no suggest calls so variance_threshold is
+    # never added to phase 2's search space.
+    if method is None:
+        return Pipeline([("feature_selector", instantiate_identity_function(trial))])
+
+    # For every real selector the variance filter is always the first step.
     variance_filter = instantiate_variance_filter(
         trial, hyperparameters=hyperparameters
     )
 
-    if isinstance(method, list):
-        method = trial.suggest_categorical("feature_selection_method", method)
-    else:
-        pass
-
-    if method == None:
-        selector = instantiate_identity_function(trial)
-
-    elif method == "pvalue":
+    if method == "pvalue":
         selector = instantiate_pvalue_filter(trial, hyperparameters)
 
     elif method == "boruta":
