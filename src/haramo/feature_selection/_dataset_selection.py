@@ -14,9 +14,6 @@ from joblib import Parallel, delayed
 from sklearn.base import clone
 from sklearn.metrics import get_scorer
 from sklearn.model_selection import StratifiedGroupKFold, StratifiedKFold
-from sklearn.svm import SVC
-
-from ..utils import reduce_dataset
 
 #############
 # Functions #
@@ -42,9 +39,9 @@ def _build_default_pipeline(task: str, random_state: int):
     return instantiate_pipeline(
         trial,
         task=task,
-        feature_selector="pvalue",  # identity – no suggest call
+        feature_selector="None",  # identity – no suggest call
         scaler="standard",  # concrete string – no suggest call
-        algorithm="RBFSVM",  # concrete string – no suggest call
+        algorithm="LGBM",  # concrete string – no suggest call
         hyperparameters="default",
         random_state=random_state,
         n_jobs=1,
@@ -79,31 +76,36 @@ def _score_dataset_combo(
         scorer = scoring
 
     if groups is not None:
-        cv = StratifiedGroupKFold(n_splits=3)
+        cv = StratifiedGroupKFold(n_splits=4)
         splits = list(cv.split(X_combo, y.astype(str), groups=groups))
     else:
-        cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=random_state)
+        cv = StratifiedKFold(n_splits=4, shuffle=True, random_state=random_state)
         splits = list(cv.split(X_combo, y.astype(str)))
 
     def _eval_fold(train_idx, test_idx):
         pipe = clone(pipeline)
-        X_tr, X_te = X_combo.iloc[train_idx], X_combo.iloc[test_idx]
-        y_tr, y_te = y.iloc[train_idx], y.iloc[test_idx]
+        X_train, X_test = X_combo.iloc[train_idx], X_combo.iloc[test_idx]
+        y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
+
+        reduced_index = reduce_dataset(
+            X=X_train,
+            y=y_train,
+            target_size=2000,
+            difficulty_model=SVC(
+                kernel="rbf", random_state=random_state, class_weight="balanced"
+            ),
+            stage2_shrink=0.9,
+            class_weight="balanced",
+            random_state=random_state,
+            verbose=False,
+        )
+
+        X_reduced = X_train.loc[reduced_index]
+        y_reduced = y_train.loc[reduced_index]
+
         try:
-            reduced_index = reduce_dataset(
-                X=X_tr,
-                y=y_tr,
-                target_size=1000,
-                difficulty_model=SVC(
-                    kernel="rbf", random_state=random_state, class_weight="balanced"
-                ),
-                stage2_shrink=0.9,
-                class_weight="balanced",
-                random_state=random_state,
-                verbose=False,
-            )
-            pipe.fit(X_tr.loc[reduced_index], y_tr.loc[reduced_index])
-            return scorer(pipe, X_te, y_te)
+            pipe.fit(X_reduced, y_reduced)
+            return scorer(pipe, X_test, y_test)
         except Exception:
             return np.nan
 
@@ -119,15 +121,25 @@ def select_best_dataset_combo(
     random_state: int = 42,
     groups=None,
     n_jobs: int = 1,
-    max_combos: int = 300,
+    beam_width: int = 2,
 ) -> Tuple[str, pd.DataFrame, pd.Series]:
     """
-    Enumerate non-empty subsets of *datasets*, score each with a default
-    pipeline, and return the winning combination.
+    Beam-search greedy forward dataset selection.
 
-    For up to 5 datasets every subset is tested (2^5 − 1 = 31 combinations,
-    matching the default ``max_combos``).  Beyond that the search is restricted
-    to singletons and pairs to keep computation manageable.
+    Algorithm
+    ---------
+    1. Score every singleton in parallel → rank, keep the top ``beam_width``
+       as the current beam.
+    2. For every combo in the beam, score all extensions (combo + one remaining
+       dataset not already in that combo) in parallel.
+    3. Rank all extension scores → keep the top ``beam_width`` as the new beam.
+       Stop if the best score in the new beam does not improve on the best score
+       from the previous step.
+    4. Return the overall best combo seen across all steps.
+
+    Worst-case evaluations: ``n + beam_width*(n-1) + beam_width*(n-2) + …``
+    which for ``beam_width=2`` and ``n`` datasets is roughly ``2n²/2 = n²``,
+    far cheaper than exhaustive ``2^n``.
 
     Parameters
     ----------
@@ -137,17 +149,13 @@ def select_best_dataset_combo(
     y : pd.Series
         Target vector.
     scoring : str or callable, default ``"balanced_accuracy"``
-        Scorer passed to ``sklearn.metrics.get_scorer`` or used directly.
     task : str, default ``"classification"``
-        Forwarded to the pipeline builder.
     random_state : int, default 42
     groups : array-like, optional
-        Group labels forwarded to ``StratifiedGroupKFold``.
     n_jobs : int, default 1
-        Total parallel workers.  Inner CV parallelism is scaled proportionally.
-    max_combos : int, default 31
-        Maximum number of subsets to evaluate before falling back to
-        singletons + pairs.
+        All CPUs used for parallel combo evaluation at each step.
+    beam_width : int, default 2
+        Number of top combos carried forward at each step.
 
     Returns
     -------
@@ -156,47 +164,104 @@ def select_best_dataset_combo(
     best_X : pd.DataFrame
         Concatenated feature matrix of the winning combination.
     scores : pd.Series
-        Mean CV score for every evaluated combination, sorted descending.
+        Mean CV score for every evaluated combination (all steps),
+        sorted descending.
     """
     names = list(datasets.keys())
     n = len(names)
+    all_scores: dict = {}
 
-    # Build candidate subsets
-    all_combos: List[tuple] = []
-    for r in range(1, n + 1):
-        for combo in _iter_combinations(names, r):
-            all_combos.append(combo)
-
-    if len(all_combos) > max_combos:
-        print(
-            f"[Dataset Selection] {len(all_combos)} possible combinations exceed "
-            f"max_combos={max_combos}; restricting to singletons and pairs."
-        )
-        all_combos = [(name,) for name in names]
-        all_combos += list(_iter_combinations(names, 2))
-
-    print(
-        f"[Dataset Selection] Scoring {len(all_combos)} combination(s) "
-        f"across {n} dataset(s) using default pipeline …"
-    )
-
-    def _score_one(combo: tuple):
+    def _score_one(combo: tuple) -> tuple:
         X_combo = pd.concat([datasets[name] for name in combo], axis=1)
         score = _score_dataset_combo(X_combo, y, scoring, task, random_state, groups)
         return combo, score
 
-    results = Parallel(n_jobs=n_jobs)(
-        delayed(_score_one)(combo) for combo in all_combos
+    # ------------------------------------------------------------------ #
+    # Step 1 – score every singleton, seed the beam                       #
+    # ------------------------------------------------------------------ #
+    print(f"[Dataset Selection] Step 1: scoring {n} singleton(s) …")
+    results = Parallel(n_jobs=n_jobs)(delayed(_score_one)((name,)) for name in names)
+    for combo, score in results:
+        all_scores[" + ".join(combo)] = score
+
+    results_sorted = sorted(
+        results, key=lambda x: x[1] if not np.isnan(x[1]) else -np.inf, reverse=True
+    )
+    beam = [combo for combo, _ in results_sorted[:beam_width]]
+    best_score = results_sorted[0][1]
+
+    print(
+        f"[Dataset Selection] Top-{beam_width} singletons: "
+        + ", ".join(f"{' + '.join(c)!r}" for c in beam)
+        + f" | best score={best_score:.4f}"
     )
 
-    scores_dict = {" + ".join(combo): score for combo, score in results}
-    scores = pd.Series(scores_dict, name="score").sort_values(ascending=False)
+    # ------------------------------------------------------------------ #
+    # Steps 2+ – beam extension                                           #
+    # ------------------------------------------------------------------ #
+    step = 2
+    while True:
+        # Build all candidate extensions across every combo in the beam.
+        # Each combo is extended with every dataset not already in it.
+        candidates = [
+            combo + (name,) for combo in beam for name in names if name not in combo
+        ]
 
-    best_combo, _ = max(
-        results,
-        key=lambda x: x[1] if not np.isnan(x[1]) else -np.inf,
+        if not candidates:
+            break
+
+        # Deduplicate: the same set of datasets can arise from different beam
+        # members (unlikely but possible with beam_width > 1).
+        seen = set()
+        unique_candidates = []
+        for c in candidates:
+            key = frozenset(c)
+            if key not in seen:
+                seen.add(key)
+                unique_candidates.append(c)
+
+        print(
+            f"[Dataset Selection] Step {step}: trying {len(unique_candidates)} "
+            f"extension(s) from {len(beam)} beam member(s) …"
+        )
+        results = Parallel(n_jobs=n_jobs)(
+            delayed(_score_one)(combo) for combo in unique_candidates
+        )
+        for combo, score in results:
+            all_scores[" + ".join(combo)] = score
+
+        results_sorted = sorted(
+            results,
+            key=lambda x: x[1] if not np.isnan(x[1]) else -np.inf,
+            reverse=True,
+        )
+        best_candidate_score = results_sorted[0][1]
+
+        if best_candidate_score <= best_score:
+            print(
+                f"[Dataset Selection] No improvement "
+                f"(best extension score={best_candidate_score:.4f} "
+                f"<= current best={best_score:.4f}). Stopping."
+            )
+            break
+
+        beam = [combo for combo, _ in results_sorted[:beam_width]]
+        best_score = best_candidate_score
+        print(
+            f"[Dataset Selection] Top-{beam_width} at step {step}: "
+            + ", ".join(f"{' + '.join(c)!r}" for c in beam)
+            + f" | best score={best_score:.4f}"
+        )
+        step += 1
+
+    # Overall best combo across all steps
+    best_combo_name = max(
+        all_scores,
+        key=lambda k: all_scores[k] if not np.isnan(all_scores[k]) else -np.inf,
     )
-    best_combo_name = " + ".join(best_combo)
-    best_X = pd.concat([datasets[name] for name in best_combo], axis=1)
+    best_X = pd.concat(
+        [datasets[name] for name in best_combo_name.split(" + ")], axis=1
+    )
+    scores = pd.Series(all_scores, name="score").sort_values(ascending=False)
 
     return best_combo_name, best_X, scores

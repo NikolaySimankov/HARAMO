@@ -103,7 +103,7 @@ if __name__ == "__main__":
     data = path / "data"
     data.mkdir(exist_ok=True)
 
-    logs = path / "logs"
+    logs = output_dir / "logs"
     logs.mkdir(exist_ok=True)
 
     jobs = []
@@ -125,9 +125,11 @@ if __name__ == "__main__":
         "ctdt": "X_ctdt.tsv",
         "ctdd": "X_ctdd.tsv",
         "aac": "X_aac.tsv",
-        "b2btools": "X_b2btools.tsv",
-        "netsurfp": "X_netsurfp.tsv",
-        "residue": "X_residue.tsv",
+        "fb2b": "X_b2btools.tsv",
+        "fnsp": "X_netsurfp.tsv",
+        "faa": "X_residue.tsv",
+        "fbiophys": "X_biophysical.tsv",
+        "faaclass": "X_class.tsv",
     }
 
     all_X = {
@@ -149,16 +151,16 @@ if __name__ == "__main__":
 
     # Split comma-separated values and remove duplicates
     proteins = [
-        # "DNA replication protein",
+        "DNA replication protein",
         "RNA-dependent RNA polymerase",
-        # "Reverse transcriptase",
-        # "Coat protein",
+        "Reverse transcriptase",
+        "Coat protein",
         "Movement protein",
-        # "Transactivator/viroplasmin protein",
+        "Transactivator/viroplasmin protein",
         "RNA silencing suppressor",
-        # "Vector transmission protein",
-        # "RNA-dependent RNA polymerase complex",
-        # "Reverse transcriptase complex",
+        "Vector transmission protein",
+        "RNA-dependent RNA polymerase complex",
+        "Reverse transcriptase complex",
     ]
 
     for protein in proteins:
@@ -191,11 +193,11 @@ if __name__ == "__main__":
             groups = intersect.set_index("Prot_ID")["Virus_Species"]
 
             sum = targets.apply(lambda x: x.sum(), axis=0).sort_values(ascending=False)
-            consistant_targets = sum[sum >= 200].index
+            consistant_targets = sum[sum >= 100].index
 
-            kwargs_heavy = {"cpus": 12, "ram": "16GB", "time": "01:00:00"}
+            kwargs_heavy = {"cpus": 12, "ram": "16GB", "time": "03:00:00"}
 
-            @job(name=f"Optimisation {args.folder}: {protein}_sp200", **kwargs_heavy)
+            @job(name=f"Optimisation {args.folder}: {protein}_sp100", **kwargs_heavy)
             def optimisation():
 
                 for target in consistant_targets:
@@ -209,7 +211,7 @@ if __name__ == "__main__":
                                 y=y,
                                 groups=groups,
                                 scoring=mcc_scorer,
-                                algorithm=["RBFSVM", "LGBM"],
+                                algorithm=["RBFSVM"],
                                 scaler="standard",
                                 feature_selector="boruta",
                                 hyperparameters="default",
@@ -219,16 +221,15 @@ if __name__ == "__main__":
                                 n_jobs=12,
                             )
 
-                    #         with open(log_path, "w") as file:
-                    #             file.write("done")
+                            with open(log_path, "w") as file:
+                                file.write("done")
 
                     except Exception as e:
-                        #     with open(log_path, "w") as file:
-                        #         import traceback
+                        with open(log_path, "w") as file:
+                            import traceback
 
-                        #         file.write(traceback.format_exc())
+                            file.write(traceback.format_exc())
                         raise
-                    break
 
             jobs.append(optimisation)
 

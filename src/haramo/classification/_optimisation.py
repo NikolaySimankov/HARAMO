@@ -65,7 +65,7 @@ def _score_fold(
     reduced_index = reduce_dataset(
         X=X_train,
         y=y_train,
-        target_size=1000,
+        target_size=2000,
         difficulty_model=SVC(
             kernel="rbf", random_state=random_state, class_weight="balanced"
         ),
@@ -688,41 +688,41 @@ def magic_now(
             header=True,
         )
 
-    # pipelines, studies = train(
-    #     X=X,
-    #     y=y,
-    #     scoring=scoring,
-    #     task=task,
-    #     feature_selector=feature_selector,
-    #     scaler=scaler,
-    #     algorithm=algorithm,
-    #     hyperparameters=hyperparameters,
-    #     random_state=random_state,
-    #     n_trials=n_trials,
-    #     groups=groups,
-    #     n_jobs=n_jobs,
-    # )
+    pipelines, studies = train(
+        X=X,
+        y=y,
+        scoring=scoring,
+        task=task,
+        feature_selector=feature_selector,
+        scaler=scaler,
+        algorithm=algorithm,
+        hyperparameters=hyperparameters,
+        random_state=random_state,
+        n_trials=n_trials,
+        groups=groups,
+        n_jobs=n_jobs,
+    )
 
-    # validation, pipeline = nested_crossval(
-    #     X=X,
-    #     y=y,
-    #     pipelines=pipelines,
-    #     groups=groups,
-    #     n_jobs=n_jobs,
-    # )
+    validation, pipeline = nested_crossval(
+        X=X,
+        y=y,
+        pipelines=pipelines,
+        groups=groups,
+        n_jobs=n_jobs,
+    )
 
-    # with open(
-    #     models_dir / f"pipelines{tag}.pkl",
-    #     "wb",
-    # ) as handle:
-    #     pickle.dump(pipeline, handle)
+    with open(
+        models_dir / f"pipelines{tag}.pkl",
+        "wb",
+    ) as handle:
+        pickle.dump(pipeline, handle)
 
-    # with open(
-    #     trials_dir / f"studies{tag}.pkl",
-    #     "wb",
-    # ) as handle:
-    #     pickle.dump(studies, handle)
+    with open(
+        trials_dir / f"studies{tag}.pkl",
+        "wb",
+    ) as handle:
+        pickle.dump(studies, handle)
 
-    # validation.to_csv(results_dir / f"validation{tag}.tsv", sep="\t", index=True)
+    validation.to_csv(results_dir / f"validation{tag}.tsv", sep="\t", index=True)
 
-    # return validation, pipeline, studies
+    return validation, pipeline, studies

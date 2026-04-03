@@ -120,7 +120,7 @@ def _fs_objective(
             reduced_index = reduce_dataset(
                 X=X_tr,
                 y=y_tr,
-                target_size=1000,
+                target_size=2000,
                 difficulty_model=SVC(
                     kernel="rbf", random_state=random_state, class_weight="balanced"
                 ),
@@ -131,10 +131,13 @@ def _fs_objective(
             )
             pipe.fit(X_tr.loc[reduced_index], y_tr.loc[reduced_index])
             scores.append(scorer(pipe, X_val, y_val))
+
         except Exception:
             scores.append(np.nan)
 
-    return float(np.nanmean(scores))
+    scores = pd.Series(scores, dtype=object).fillna(0.01).tolist()
+    score = float(np.nanmean(scores))
+    return score if not np.isnan(score) else 0.0
 
 
 def select_best_feature_selector(
@@ -207,7 +210,23 @@ def select_best_feature_selector(
         n_jobs=1,  # sequential: all CPUs go to boruta RF inside each trial
     )
 
-    best_trial = study.best_trial
+    try:
+        best_trial = study.best_trial
+    except ValueError:
+        best_trial = None
+
+    if best_trial is None or best_trial.value == 0.0:
+        # Every trial failed or eliminated all features.  Fall back to an
+        # identity transformer so _train_fold can continue with the full set.
+        from sklearn.preprocessing import FunctionTransformer
+
+        print(
+            "[FS HPO] all trials failed — falling back to identity (no feature selection)"
+        )
+        fallback = Pipeline([("feature_selector", FunctionTransformer())])
+        fallback.fit(X_train, y_train)
+        return fallback
+
     print(f"[FS HPO] best score={best_trial.value:.4f} | params={best_trial.params}")
 
     # Reconstruct the FS pipeline from the best trial's params and fit it on the

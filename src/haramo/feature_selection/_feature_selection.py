@@ -7,6 +7,7 @@ import numpy as np
 from typing import Union
 
 from sklearn.feature_selection import VarianceThreshold
+from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 
 from sklearn.ensemble import RandomForestClassifier
@@ -235,6 +236,9 @@ def instantiate_feature_selector(
     if method is None:
         return Pipeline([("feature_selector", instantiate_identity_function(trial))])
 
+    # Impute NaN before variance filtering so downstream estimators never see them.
+    imputer = SimpleImputer(strategy="constant", fill_value=0)
+
     # For every real selector the variance filter is always the first step.
     variance_filter = instantiate_variance_filter(
         trial, hyperparameters=hyperparameters
@@ -268,6 +272,7 @@ def instantiate_feature_selector(
 
     return Pipeline(
         [
+            ("imputer", imputer),
             ("filter", variance_filter),
             ("feature_selector", selector),
         ]
