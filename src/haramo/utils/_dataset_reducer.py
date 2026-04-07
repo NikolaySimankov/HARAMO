@@ -196,7 +196,9 @@ def _balance_classes_via_clusters(
 
             w_sum = w.sum()
             w = w / w_sum if w_sum > 0 else np.ones(len(w)) / len(w)
-            take = min(share, len(available))
+            # replace=False requires size <= number of non-zero weights;
+            # clamp take so we never request more than that.
+            take = min(share, len(available), int((w > 0).sum()))
             sampled_local = rng.choice(available, size=take, replace=False, p=w)
             sampled_global = global_cls_idx[sampled_local]
             selected.update(sampled_global.tolist())

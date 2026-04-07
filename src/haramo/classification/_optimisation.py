@@ -221,9 +221,9 @@ def objective(
         n_jobs=n_cv_jobs,
     )
 
-    score = np.mean(scores)
+    scores = pd.Series(scores, dtype=object).fillna(0.01).tolist()
 
-    return score
+    return float(np.mean(scores))
 
 
 def get_search_space(feature_selector, scaler, algorithm):

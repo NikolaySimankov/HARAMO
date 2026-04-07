@@ -14,6 +14,9 @@ from joblib import Parallel, delayed
 from sklearn.base import clone
 from sklearn.metrics import get_scorer
 from sklearn.model_selection import StratifiedGroupKFold, StratifiedKFold
+from sklearn.svm import SVC
+from ..utils import reduce_dataset
+
 
 #############
 # Functions #
@@ -39,7 +42,7 @@ def _build_default_pipeline(task: str, random_state: int):
     return instantiate_pipeline(
         trial,
         task=task,
-        feature_selector="None",  # identity – no suggest call
+        feature_selector=None,  # identity – no suggest call
         scaler="standard",  # concrete string – no suggest call
         algorithm="LGBM",  # concrete string – no suggest call
         hyperparameters="default",
@@ -82,7 +85,8 @@ def _score_dataset_combo(
         cv = StratifiedKFold(n_splits=4, shuffle=True, random_state=random_state)
         splits = list(cv.split(X_combo, y.astype(str)))
 
-    def _eval_fold(train_idx, test_idx):
+    scores = []
+    for train_idx, test_idx in splits:
         pipe = clone(pipeline)
         X_train, X_test = X_combo.iloc[train_idx], X_combo.iloc[test_idx]
         y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
@@ -100,17 +104,15 @@ def _score_dataset_combo(
             verbose=False,
         )
 
-        X_reduced = X_train.loc[reduced_index]
-        y_reduced = y_train.loc[reduced_index]
-
         try:
-            pipe.fit(X_reduced, y_reduced)
-            return scorer(pipe, X_test, y_test)
+            pipe.fit(X_train.loc[reduced_index], y_train.loc[reduced_index])
+            scores.append(scorer(pipe, X_test, y_test))
         except Exception:
-            return np.nan
+            scores.append(np.nan)
 
-    scores = [_eval_fold(tr, te) for tr, te in splits]
-    return float(np.nanmean(scores))
+    score = float(pd.Series(scores, dtype=float).fillna(0.01).mean())
+
+    return score
 
 
 def select_best_dataset_combo(

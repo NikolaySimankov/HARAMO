@@ -45,11 +45,11 @@ def instantiate_variance_filter(trial: Trial, hyperparameters: str = "optimize")
     if hyperparameters == "optimize":
         params = {
             "threshold": trial.suggest_float(
-                "variance_threshold", 0.01, 0.05, step=0.01
+                "variance_threshold", 0.001, 0.01, step=0.001
             )
         }
     elif hyperparameters == "default":
-        params = {"threshold": 0.01}
+        params = {"threshold": 0.001}
     else:
         raise ValueError("hyperparameters must be 'optimize' or 'default'")
 
@@ -237,7 +237,10 @@ def instantiate_feature_selector(
         return Pipeline([("feature_selector", instantiate_identity_function(trial))])
 
     # Impute NaN before variance filtering so downstream estimators never see them.
-    imputer = SimpleImputer(strategy="constant", fill_value=0)
+    # set_output("pandas") preserves column names so LGBM doesn't warn at predict time.
+    imputer = SimpleImputer(strategy="constant", fill_value=0).set_output(
+        transform="pandas"
+    )
 
     # For every real selector the variance filter is always the first step.
     variance_filter = instantiate_variance_filter(

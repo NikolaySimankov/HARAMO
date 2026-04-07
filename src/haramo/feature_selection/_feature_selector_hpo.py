@@ -87,6 +87,7 @@ def _fs_objective(
     )
     # Scaler and model are fixed to defaults: no trial.suggest_* calls are made.
     scaler = instantiate_standard_scaler(trial, hyperparameters="default")
+
     model = instantiate_model(
         trial,
         algorithm="LGBM",
@@ -135,9 +136,9 @@ def _fs_objective(
         except Exception:
             scores.append(np.nan)
 
-    scores = pd.Series(scores, dtype=object).fillna(0.01).tolist()
-    score = float(np.nanmean(scores))
-    return score if not np.isnan(score) else 0.0
+    score = float(pd.Series(scores, dtype=float).fillna(0.01).mean())
+
+    return score
 
 
 def select_best_feature_selector(
@@ -241,6 +242,15 @@ def select_best_feature_selector(
         random_state=random_state,
         n_jobs=n_jobs,
     )
-    fs_pipeline.fit(X_train, y_train)
+    try:
+        fs_pipeline.fit(X_train, y_train)
+    except ValueError:
+        from sklearn.preprocessing import FunctionTransformer
+
+        print(
+            "[FS HPO] best trial params eliminated all features on full fold — falling back to identity"
+        )
+        fs_pipeline = Pipeline([("feature_selector", FunctionTransformer())])
+        fs_pipeline.fit(X_train, y_train)
 
     return fs_pipeline
