@@ -510,16 +510,30 @@ def train(
     return models, studies
 
 
-def _fit_and_predict(pipeline, X, y, sample_weight, train_index, test_index):
-    """Fit a cloned pipeline on a single CV split and return predictions."""
+def _fit_and_predict(
+    pipeline, X, y, sample_weight, train_index, test_index, reduced_train_index
+):
+    """Fit a cloned pipeline on a (possibly reduced) CV split and return predictions.
+
+    Parameters
+    ----------
+    reduced_train_index : pandas Index
+        Pre-computed subset of the training rows to actually fit on.  Pass
+        ``X.iloc[train_index].index`` for no reduction (100 %).  The same
+        index is shared across all pipelines for a given (split, pct) so that
+        reduction noise does not confound model comparisons.
+    """
     pipe = clone(pipeline)
-    X_train, X_test = X.iloc[train_index], X.iloc[test_index]
-    y_train, y_test = y.iloc[train_index], y.iloc[test_index]
-    w_train = sample_weight.loc[y_train.index]
+    X_test = X.loc[test_index]
+    y_test = y.loc[test_index]
+
+    X_train = X.loc[reduced_train_index]
+    y_train = y.loc[reduced_train_index]
+    w_train = sample_weight.loc[reduced_train_index]
 
     try:
         pipe.fit(X_train, y_train, model__sample_weight=w_train)
-    except:
+    except Exception:
         pipe.fit(X_train, y_train)
 
     return pd.DataFrame(
@@ -538,29 +552,40 @@ def nested_crossval(
     n_jobs: int = 16,
 ):
     """
-    Perform nested cross-validation on a set of models.
+    Perform nested cross-validation on a set of pipelines, jointly optimising
+    over the trained model (fold) **and** the dataset reduction percentage.
 
-    Parameters:
-    -----------
-    X : Union[np.ndarray, pd.DataFrame]
-        Feature matrix.
-    y : Union[np.ndarray, pd.Series, list]
-        Target vector.
-    models : dict
-        Dictionary of models to be evaluated, where keys are fold identifiers and values are classifier instances.
-    groups : Union[np.ndarray, pd.Series, list], optional
-        Group labels for the samples, by default None
-    n_jobs : int, default=16
-        Number of parallel jobs for cross-validation.
+    Reduction sizes
+    ---------------
+    Candidate percentages run from 10 % to 100 % in 10 % steps.  A percentage
+    is only included when the resulting training subset contains at least 2 000
+    instances.  When the smallest training fold itself contains fewer than
+    2 000 instances only 80 % and 90 % are tested (100 % is always included).
 
-    Returns:
-    --------
+    Consistency guarantee
+    ---------------------
+    For a given (split, percentage) pair the **same** reduced index is used
+    across all candidate pipelines, so reduction noise never confounds model
+    comparisons.
+
+    Parameters
+    ----------
+    X : pd.DataFrame
+    y : pd.Series
+    pipelines : dict
+        Mapping fold_name → fitted sklearn Pipeline (output of ``train``).
+    random_state : int, default 42
+    groups : array-like, optional
+    n_jobs : int, default 16
+
+    Returns
+    -------
     validation : pd.DataFrame
-        DataFrame containing classification reports for each fold.
-    best_model : classifier instance
-        The model corresponding to the best fold based on the Kappa score.
+        MultiIndex (fold, reduction) × metric classification report.
+    best_model : sklearn Pipeline
+        Best (fold, pct) pipeline refitted on the full dataset using the
+        winning reduction percentage.
     """
-
     sample_weight = pd.Series(
         compute_sample_weight(class_weight="balanced", y=y),
         index=y.index,
@@ -577,50 +602,133 @@ def nested_crossval(
 
     splits = list(strat_kfold_outer.split(X, y.astype("str"), groups=groups))
 
-    # Build all (fold, split) tasks and run in parallel
-    tasks = [
-        (fold, pipelines[fold], train_idx, test_idx)
+    # ------------------------------------------------------------------ #
+    # Determine valid reduction percentages                              #
+    # Use the smallest training fold as the conservative reference.      #
+    # ------------------------------------------------------------------ #
+    all_percentages = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+    min_size = 2000
+    min_n_train = min(len(train_idx) for train_idx, _ in splits)
+
+    if min_n_train < min_size:
+        valid_pcts = [0.8, 0.9, 1.0]
+    else:
+        valid_pcts = [p for p in all_percentages if int(p * min_n_train) >= min_size]
+
+    print(
+        f"[nested_crossval] Reduction sizes: "
+        + ", ".join(f"{int(p * 100)}%" for p in valid_pcts)
+    )
+
+    # ------------------------------------------------------------------ #
+    # Pre-compute reduced indices: one set per (split, pct), shared       #
+    # across all pipelines so reduction noise is not a confound.          #
+    # ------------------------------------------------------------------ #
+    reduced_idx: dict = {}
+    for split_idx, (train_index, _) in enumerate(splits):
+        X_train = X.loc[train_index]
+        y_train = y.loc[train_index]
+        n_train = len(train_index)
+        for pct in valid_pcts:
+            if pct == 1.0:
+                reduced_idx[(split_idx, pct)] = X_train.index
+            else:
+                reduced_idx[(split_idx, pct)] = reduce_dataset(
+                    X=X_train,
+                    y=y_train,
+                    target_size=int(pct * n_train),
+                    difficulty_model=SVC(
+                        kernel="rbf",
+                        random_state=random_state,
+                        class_weight="balanced",
+                    ),
+                    stage2_shrink=0.9,
+                    class_weight="balanced",
+                    random_state=random_state,
+                    verbose=False,
+                )
+
+    # ------------------------------------------------------------------ #
+    # Build all (fold, split_idx, pct) tasks and run in parallel          #
+    # ------------------------------------------------------------------ #
+    task_keys = [
+        (fold, split_idx, pct)
         for fold in pipelines
-        for train_idx, test_idx in splits
+        for split_idx in range(len(splits))
+        for pct in valid_pcts
     ]
 
     results = Parallel(n_jobs=n_jobs)(
-        delayed(_fit_and_predict)(pipe, X, y, sample_weight, train_idx, test_idx)
-        for _, pipe, train_idx, test_idx in tasks
+        delayed(_fit_and_predict)(
+            pipelines[fold],
+            X,
+            y,
+            sample_weight,
+            splits[split_idx][0],
+            splits[split_idx][1],
+            reduced_idx[(split_idx, pct)],
+        )
+        for fold, split_idx, pct in task_keys
     )
 
-    # Aggregate results by fold
-    validation = pd.DataFrame()
-    n_splits = len(splits)
-    for i, fold in enumerate(pipelines):
-        fold_results = results[i * n_splits : (i + 1) * n_splits]
-        all_predicted_values = pd.concat(fold_results, axis=0)
+    # ------------------------------------------------------------------ #
+    # Aggregate predictions by (fold, pct) → classification report        #
+    # ------------------------------------------------------------------ #
+    pred_store = {
+        (fold, pct, split_idx): pred_df
+        for (fold, split_idx, pct), pred_df in zip(task_keys, results)
+    }
 
-        validation[fold] = classification_report(
-            all_predicted_values["true"],
-            all_predicted_values["predicted"],
-        )
+    validation: dict = {}
+    for fold in pipelines:
+        for pct in valid_pcts:
+            all_preds = pd.concat(
+                [pred_store[(fold, pct, si)] for si in range(len(splits))], axis=0
+            )
+            validation[(fold, pct)] = classification_report(
+                all_preds["true"], all_preds["predicted"]
+            )
 
-    # Find the best fold based on MCC and refit on all data
-    best_fold = validation.T["MCC"].idxmax()
+    validation_df = pd.DataFrame(validation).T
+    validation_df.index.names = ["fold", "reduction"]
+
+    # ------------------------------------------------------------------ #
+    # Find best (fold, pct) by MCC and refit on full data                 #
+    # ------------------------------------------------------------------ #
+    best_fold, best_pct = validation_df["MCC"].idxmax()
+    best_mcc = validation_df.loc[(best_fold, best_pct), "MCC"]
+    print(
+        f"[nested_crossval] Best: {best_fold!r} @ {int(best_pct * 100)}% "
+        f"reduction (MCC={best_mcc:.4f})"
+    )
+
     best_model = clone(pipelines[best_fold])
 
+    if best_pct == 1.0:
+        X_final, y_final, w_final = X, y, sample_weight
+    else:
+        final_index = reduce_dataset(
+            X=X,
+            y=y,
+            target_size=int(best_pct * len(X)),
+            difficulty_model=SVC(
+                kernel="rbf", random_state=random_state, class_weight="balanced"
+            ),
+            stage2_shrink=0.9,
+            class_weight="balanced",
+            random_state=random_state,
+            verbose=False,
+        )
+        X_final = X.loc[final_index]
+        y_final = y.loc[final_index]
+        w_final = sample_weight.loc[final_index]
+
     try:
-        best_model.fit(
-            X,
-            y,
-            model__sample_weight=sample_weight,
-        )
+        best_model.fit(X_final, y_final, model__sample_weight=w_final)
+    except Exception:
+        best_model.fit(X_final, y_final)
 
-    except:
-        best_model.fit(
-            X,
-            y,
-        )
-
-    validation = validation.T
-
-    return validation, best_model
+    return validation_df, best_model
 
 
 def magic_now(
