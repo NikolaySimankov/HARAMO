@@ -114,22 +114,22 @@ if __name__ == "__main__":
     )
 
     counts = all_targets.apply(sum)
-    consistent_targets = counts[counts >= 8].index
+    consistent_targets = counts[counts >= 12].index
     all_targets = all_targets[consistent_targets]
     all_targets.reset_index(inplace=True)
 
     # Load the feature DataFrames
     feature_files = {
-        "ctd":     "X_ctd.tsv",
-        "ctdc":    "X_ctdc.tsv",
-        "ctdt":    "X_ctdt.tsv",
-        "ctdd":    "X_ctdd.tsv",
-        "aac":     "X_aac.tsv",
-        "b2b":     "X_b2btools.tsv",
-        "nsp":     "X_netsurfp.tsv",
+        "ctd": "X_ctd.tsv",
+        "ctdc": "X_ctdc.tsv",
+        "ctdt": "X_ctdt.tsv",
+        "ctdd": "X_ctdd.tsv",
+        "aac": "X_aac.tsv",
+        "b2b": "X_b2btools.tsv",
+        "nsp": "X_netsurfp.tsv",
         "residue": "X_residue.tsv",
-        "biophys": "X_biophysical.tsv",
-        "class":   "X_class.tsv",
+        "biophys": "X_biophys.tsv",
+        "class": "X_class.tsv",
     }
 
     all_X = {
@@ -181,10 +181,7 @@ if __name__ == "__main__":
             prot_ids = intersect["Prot_ID"]
 
             # Align each feature dataset to the intersected protein IDs; fill all-NaN values by 0
-            datasets = {
-                name: X.loc[prot_ids].fillna(0)
-                for name, X in all_X.items()
-            }
+            datasets = {name: X.loc[prot_ids].fillna(0) for name, X in all_X.items()}
 
             targets = intersect[["Prot_ID"] + list(all_targets.columns)]
             targets.drop(columns=["Virus_Species"], inplace=True)
@@ -209,9 +206,9 @@ if __name__ == "__main__":
                             magic_now(
                                 X=datasets,
                                 y=y,
-                                #groups=groups,
+                                groups=groups,
                                 scoring=mcc_scorer,
-                                algorithm=["LGBM"],
+                                algorithm=["LGBM", "RBFSVM"],
                                 scaler="standard",
                                 feature_selector="boruta",
                                 hyperparameters="optimize",

@@ -416,6 +416,130 @@ def _train_fold(
     return fold_name, final_pipeline, study
 
 
+def _train_fold_multi_alg(
+    fold_idx,
+    X,
+    y,
+    sample_weight,
+    train_index,
+    test_index,
+    scoring,
+    task,
+    feature_selector,
+    scaler,
+    algorithms,
+    n_trials_per_alg,
+    n_cv_jobs,
+    random_state,
+    groups=None,
+):
+    """
+    Two-phase optimisation for one outer fold when a list of algorithms is
+    provided with ``hyperparameters="optimize"``.
+
+    Phase 1 – Feature-selection HPO runs **once** for the fold, shared across
+    all algorithms so FS is not duplicated for each model.
+
+    Phase 2 – One independent Optuna study per algorithm, each with
+    ``n_trials_per_alg`` trials on the pre-selected feature matrix.
+
+    Returns
+    -------
+    list of (name, pipeline, study)
+        One entry per algorithm; name = ``fold_{fold_idx}_{alg}``.
+    """
+    X_train, X_test = X.iloc[train_index], X.iloc[test_index]
+    y_train, y_test = y.iloc[train_index], y.iloc[test_index]
+    w_train = sample_weight.loc[y_train.index]
+
+    if groups is not None:
+        groups_s = (
+            groups
+            if isinstance(groups, pd.Series)
+            else pd.Series(groups, index=y.index)
+        )
+        groups_train = groups_s.iloc[train_index]
+    else:
+        groups_train = None
+
+    # ------------------------------------------------------------------ #
+    # Phase 1 – feature-selection HPO (shared across all algorithms)      #
+    # ------------------------------------------------------------------ #
+    fs_pipeline = select_best_feature_selector(
+        X_train=X_train,
+        y_train=y_train,
+        feature_selector=feature_selector,
+        task=task,
+        scoring=scoring,
+        random_state=random_state,
+        groups=groups_train,
+        n_jobs=n_cv_jobs,
+    )
+    X_train_sel = fs_pipeline.transform(X_train)
+    X_test_sel = fs_pipeline.transform(X_test)
+
+    # ------------------------------------------------------------------ #
+    # Phase 2 – one Optuna study per algorithm                            #
+    # ------------------------------------------------------------------ #
+    if n_cv_jobs < 2:
+        _model_jobs, _inner_jobs = n_cv_jobs, 1
+    elif n_cv_jobs == 3:
+        _model_jobs, _inner_jobs = 1, n_cv_jobs
+    elif n_cv_jobs < 6:
+        _model_jobs, _inner_jobs = n_cv_jobs, 1
+    else:
+        _model_jobs, _inner_jobs = n_cv_jobs // 3, 3
+
+    fold_results = []
+    for alg in algorithms:
+        sampler = TPESampler(seed=random_state, multivariate=True)
+        study = create_study(
+            direction="maximize",
+            pruner=SuccessiveHalvingPruner(reduction_factor=2),
+            sampler=sampler,
+        )
+        # default-argument capture avoids the closure-over-loop-variable trap
+        study.optimize(
+            lambda trial, _alg=alg: objective(
+                trial,
+                X_train=X_train_sel,
+                y_train=y_train,
+                X_test=X_test_sel,
+                y_test=y_test,
+                sample_weight=w_train,
+                scoring=scoring,
+                task=task,
+                feature_selector=None,  # already applied in phase 1
+                scaler=scaler,
+                algorithm=_alg,  # fixed to this algorithm
+                hyperparameters="optimize",
+                random_state=random_state,
+                n_cv_jobs=_inner_jobs,
+                model_jobs=_model_jobs,
+                groups=groups_train,
+            ),
+            n_trials=n_trials_per_alg,
+            n_jobs=1,
+        )
+
+        phase2_pipeline = instantiate_pipeline(
+            trial=study.best_trial,
+            feature_selector=None,
+            scaler=scaler,
+            algorithm=alg,
+            hyperparameters="optimize",
+            random_state=random_state,
+        )
+        final_pipeline = Pipeline(
+            fs_pipeline.steps
+            + [s for s in phase2_pipeline.steps if s[0] in ("scaler", "model")]
+        )
+
+        fold_results.append((f"fold_{fold_idx}_{alg}", final_pipeline, study))
+
+    return fold_results
+
+
 def train(
     X: Union[np.ndarray, pd.DataFrame],
     y: Union[np.ndarray, pd.Series, list],
@@ -482,30 +606,61 @@ def train(
     n_outer_folds = len(splits)
     n_cv_jobs = max(1, n_jobs // n_outer_folds)
 
-    results = Parallel(n_jobs=n_outer_folds)(
-        delayed(_train_fold)(
-            fold_idx=fold_idx,
-            X=X,
-            y=y,
-            sample_weight=sample_weight,
-            train_index=train_index,
-            test_index=test_index,
-            scoring=scoring,
-            task=task,
-            feature_selector=feature_selector,
-            scaler=scaler,
-            algorithm=algorithm,
-            hyperparameters=hyperparameters,
-            random_state=random_state,
-            n_trials=n_trials,
-            n_cv_jobs=n_cv_jobs,
-            groups=groups,
-        )
-        for fold_idx, (train_index, test_index) in enumerate(splits, start=1)
-    )
+    per_alg_mode = isinstance(algorithm, list) and hyperparameters == "optimize"
 
-    models = {name: model for name, model, _ in results}
-    studies = {name: study for name, _, study in results}
+    if per_alg_mode:
+        n_trials_per_alg = max(1, n_trials // len(algorithm))
+        print(
+            f"[train] Per-algorithm HPO: {len(algorithm)} algorithm(s) × "
+            f"{n_trials_per_alg} trial(s) each."
+        )
+        raw = Parallel(n_jobs=n_outer_folds)(
+            delayed(_train_fold_multi_alg)(
+                fold_idx=fold_idx,
+                X=X,
+                y=y,
+                sample_weight=sample_weight,
+                train_index=train_index,
+                test_index=test_index,
+                scoring=scoring,
+                task=task,
+                feature_selector=feature_selector,
+                scaler=scaler,
+                algorithms=algorithm,
+                n_trials_per_alg=n_trials_per_alg,
+                n_cv_jobs=n_cv_jobs,
+                random_state=random_state,
+                groups=groups,
+            )
+            for fold_idx, (train_index, test_index) in enumerate(splits, start=1)
+        )
+        # raw is list-of-lists; flatten into (name, model, study) triples
+        flat = [entry for fold_list in raw for entry in fold_list]
+    else:
+        flat = Parallel(n_jobs=n_outer_folds)(
+            delayed(_train_fold)(
+                fold_idx=fold_idx,
+                X=X,
+                y=y,
+                sample_weight=sample_weight,
+                train_index=train_index,
+                test_index=test_index,
+                scoring=scoring,
+                task=task,
+                feature_selector=feature_selector,
+                scaler=scaler,
+                algorithm=algorithm,
+                hyperparameters=hyperparameters,
+                random_state=random_state,
+                n_trials=n_trials,
+                n_cv_jobs=n_cv_jobs,
+                groups=groups,
+            )
+            for fold_idx, (train_index, test_index) in enumerate(splits, start=1)
+        )
+
+    models = {name: model for name, model, _ in flat}
+    studies = {name: study for name, _, study in flat}
 
     return models, studies
 
@@ -513,19 +668,20 @@ def train(
 def _fit_and_predict(
     pipeline, X, y, sample_weight, train_index, test_index, reduced_train_index
 ):
-    """Fit a cloned pipeline on a (possibly reduced) CV split and return predictions.
+    """Fit a cloned pipeline on a (possibly reduced) split and return predictions.
 
     Parameters
     ----------
     reduced_train_index : pandas Index
-        Pre-computed subset of the training rows to actually fit on.  Pass
-        ``X.iloc[train_index].index`` for no reduction (100 %).  The same
-        index is shared across all pipelines for a given (split, pct) so that
-        reduction noise does not confound model comparisons.
+        Pre-computed subset of training rows to fit on.  Pass the full
+        training index for no reduction (100 %).  The same index is shared
+        across all pipelines for a given (split, pct) so that reduction noise
+        does not confound model comparisons.  Scoring always uses the full
+        test split.
     """
     pipe = clone(pipeline)
-    X_test = X.loc[test_index]
-    y_test = y.loc[test_index]
+    X_test = X.iloc[test_index]
+    y_test = y.iloc[test_index]
 
     X_train = X.loc[reduced_train_index]
     y_train = y.loc[reduced_train_index]
@@ -543,6 +699,42 @@ def _fit_and_predict(
     )
 
 
+def _refit_pipeline(pipeline, X, y, sample_weight, pct=1.0, random_state=42):
+    """Refit a cloned pipeline, optionally on a reduced dataset.
+
+    Parameters
+    ----------
+    pct : float, default 1.0
+        Fraction of rows to use (the winning reduction percentage from
+        nested_crossval).  When 1.0 the full dataset is used.
+    """
+    model = clone(pipeline)
+    if pct < 1.0:
+        final_index = reduce_dataset(
+            X=X,
+            y=y,
+            target_size=int(pct * len(X)),
+            difficulty_model=SVC(
+                kernel="rbf", random_state=random_state, class_weight="balanced"
+            ),
+            stage2_shrink=0.9,
+            class_weight="balanced",
+            random_state=random_state,
+            verbose=False,
+        )
+        X_fit = X.loc[final_index]
+        y_fit = y.loc[final_index]
+        w_fit = sample_weight.loc[final_index]
+    else:
+        X_fit, y_fit, w_fit = X, y, sample_weight
+
+    try:
+        model.fit(X_fit, y_fit, model__sample_weight=w_fit)
+    except Exception:
+        model.fit(X_fit, y_fit)
+    return model
+
+
 def nested_crossval(
     X: Union[np.ndarray, pd.DataFrame],
     y: Union[np.ndarray, pd.Series, list],
@@ -550,22 +742,19 @@ def nested_crossval(
     random_state: int = 42,
     groups: Union[np.ndarray, pd.Series, list] = None,
     n_jobs: int = 16,
+    algorithms: Union[list, None] = None,
 ):
     """
-    Perform nested cross-validation on a set of pipelines, jointly optimising
-    over the trained model (fold) **and** the dataset reduction percentage.
+    Perform nested cross-validation jointly optimising over trained model
+    (fold), dataset reduction percentage, and — when requested — algorithm.
 
     Reduction sizes
     ---------------
-    Candidate percentages run from 10 % to 100 % in 10 % steps.  A percentage
-    is only included when the resulting training subset contains at least 2 000
-    instances.  When the smallest training fold itself contains fewer than
-    2 000 instances only 80 % and 90 % are tested (100 % is always included).
-
-    Consistency guarantee
-    ---------------------
-    For a given (split, percentage) pair the **same** reduced index is used
-    across all candidate pipelines, so reduction noise never confounds model
+    Percentages run 10 % → 100 % in 10 % steps.  A percentage is included
+    only when ``int(pct × min_n_train) ≥ 2000``.  When the smallest training
+    fold has fewer than 2 000 rows, only 80 % and 90 % are tested (100 % is
+    always included).  Reduced indices are computed **once per (split, pct)**
+    and reused across all pipelines so reduction noise never confounds model
     comparisons.
 
     Parameters
@@ -573,18 +762,24 @@ def nested_crossval(
     X : pd.DataFrame
     y : pd.Series
     pipelines : dict
-        Mapping fold_name → fitted sklearn Pipeline (output of ``train``).
+        Mapping key → fitted Pipeline.  Single-algorithm mode: keys are
+        ``"fold_{i}"``; per-algorithm mode: ``"fold_{i}_{alg}"``.
     random_state : int, default 42
     groups : array-like, optional
     n_jobs : int, default 16
+    algorithms : list of str, optional
+        Per-algorithm mode: one best ``(fold, pct)`` is chosen per algorithm
+        and returned as an ordered list of refitted pipelines.  Validation has
+        a MultiIndex ``(algorithm, fold, reduction)``.
+        Single mode (``None``): one best ``(fold, pct)`` overall; validation
+        has a MultiIndex ``(fold, reduction)``.
 
     Returns
     -------
     validation : pd.DataFrame
-        MultiIndex (fold, reduction) × metric classification report.
-    best_model : sklearn Pipeline
-        Best (fold, pct) pipeline refitted on the full dataset using the
-        winning reduction percentage.
+        Classification report with MultiIndex as described above.
+    best_pipeline : Pipeline or list of Pipeline
+        Single best pipeline or one per algorithm (per-algorithm mode).
     """
     sample_weight = pd.Series(
         compute_sample_weight(class_weight="balanced", y=y),
@@ -601,10 +796,10 @@ def nested_crossval(
         )
 
     splits = list(strat_kfold_outer.split(X, y.astype("str"), groups=groups))
+    n_splits = len(splits)
 
     # ------------------------------------------------------------------ #
-    # Determine valid reduction percentages                              #
-    # Use the smallest training fold as the conservative reference.      #
+    # Valid reduction percentages                                          #
     # ------------------------------------------------------------------ #
     all_percentages = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
     min_size = 2000
@@ -616,18 +811,17 @@ def nested_crossval(
         valid_pcts = [p for p in all_percentages if int(p * min_n_train) >= min_size]
 
     print(
-        f"[nested_crossval] Reduction sizes: "
+        "[nested_crossval] Reduction sizes: "
         + ", ".join(f"{int(p * 100)}%" for p in valid_pcts)
     )
 
     # ------------------------------------------------------------------ #
-    # Pre-compute reduced indices: one set per (split, pct), shared       #
-    # across all pipelines so reduction noise is not a confound.          #
+    # Pre-compute reduced indices once per (split_idx, pct)               #
     # ------------------------------------------------------------------ #
     reduced_idx: dict = {}
     for split_idx, (train_index, _) in enumerate(splits):
-        X_train = X.loc[train_index]
-        y_train = y.loc[train_index]
+        X_train = X.iloc[train_index]
+        y_train = y.iloc[train_index]
         n_train = len(train_index)
         for pct in valid_pcts:
             if pct == 1.0:
@@ -649,18 +843,18 @@ def nested_crossval(
                 )
 
     # ------------------------------------------------------------------ #
-    # Build all (fold, split_idx, pct) tasks and run in parallel          #
+    # Build (fold_key, split_idx, pct) tasks and run in parallel          #
     # ------------------------------------------------------------------ #
     task_keys = [
-        (fold, split_idx, pct)
-        for fold in pipelines
-        for split_idx in range(len(splits))
+        (fold_key, split_idx, pct)
+        for fold_key in pipelines
+        for split_idx in range(n_splits)
         for pct in valid_pcts
     ]
 
     results = Parallel(n_jobs=n_jobs)(
         delayed(_fit_and_predict)(
-            pipelines[fold],
+            pipelines[fold_key],
             X,
             y,
             sample_weight,
@@ -668,67 +862,93 @@ def nested_crossval(
             splits[split_idx][1],
             reduced_idx[(split_idx, pct)],
         )
-        for fold, split_idx, pct in task_keys
+        for fold_key, split_idx, pct in task_keys
     )
 
     # ------------------------------------------------------------------ #
-    # Aggregate predictions by (fold, pct) → classification report        #
+    # Aggregate predictions per (fold_key, pct)                           #
     # ------------------------------------------------------------------ #
     pred_store = {
-        (fold, pct, split_idx): pred_df
-        for (fold, split_idx, pct), pred_df in zip(task_keys, results)
+        (fold_key, split_idx, pct): df
+        for (fold_key, split_idx, pct), df in zip(task_keys, results)
     }
 
-    validation: dict = {}
-    for fold in pipelines:
+    reports: dict = {}
+    for fold_key in pipelines:
         for pct in valid_pcts:
             all_preds = pd.concat(
-                [pred_store[(fold, pct, si)] for si in range(len(splits))], axis=0
+                [pred_store[(fold_key, si, pct)] for si in range(n_splits)], axis=0
             )
-            validation[(fold, pct)] = classification_report(
+            reports[(fold_key, pct)] = classification_report(
                 all_preds["true"], all_preds["predicted"]
             )
 
-    validation_df = pd.DataFrame(validation).T
-    validation_df.index.names = ["fold", "reduction"]
+    # ------------------------------------------------------------------ #
+    # Per-algorithm mode                                                   #
+    # ------------------------------------------------------------------ #
+    if algorithms is not None:
+        index_tuples, rows = [], []
+        for alg in algorithms:
+            for (fold_key, pct), report in reports.items():
+                if fold_key.endswith(f"_{alg}"):
+                    index_tuples.append((alg, fold_key, pct))
+                    rows.append(report)
+
+        validation = pd.DataFrame(
+            rows,
+            index=pd.MultiIndex.from_tuples(
+                index_tuples, names=["algorithm", "fold", "reduction"]
+            ),
+        )
+
+        best_pipelines = []
+        for alg in algorithms:
+            alg_df = validation.loc[alg]
+            best_fold_key, best_pct = alg_df["MCC"].idxmax()
+            best_mcc = alg_df.loc[(best_fold_key, best_pct), "MCC"]
+            print(
+                f"[nested_crossval] {alg}: best fold={best_fold_key!r} "
+                f"@ {int(best_pct * 100)}% (MCC={best_mcc:.4f}) "
+                f"— refitting …"
+            )
+            best_pipelines.append(
+                _refit_pipeline(
+                    pipelines[best_fold_key],
+                    X,
+                    y,
+                    sample_weight,
+                    pct=best_pct,
+                    random_state=random_state,
+                )
+            )
+
+        return validation, best_pipelines
 
     # ------------------------------------------------------------------ #
-    # Find best (fold, pct) by MCC and refit on full data                 #
+    # Single-algorithm mode                                                #
     # ------------------------------------------------------------------ #
-    best_fold, best_pct = validation_df["MCC"].idxmax()
-    best_mcc = validation_df.loc[(best_fold, best_pct), "MCC"]
-    print(
-        f"[nested_crossval] Best: {best_fold!r} @ {int(best_pct * 100)}% "
-        f"reduction (MCC={best_mcc:.4f})"
+    index_tuples = list(reports.keys())
+    validation = pd.DataFrame(
+        list(reports.values()),
+        index=pd.MultiIndex.from_tuples(index_tuples, names=["fold", "reduction"]),
     )
 
-    best_model = clone(pipelines[best_fold])
+    best_fold, best_pct = validation["MCC"].idxmax()
+    best_mcc = validation.loc[(best_fold, best_pct), "MCC"]
+    print(
+        f"[nested_crossval] Best: {best_fold!r} @ {int(best_pct * 100)}% "
+        f"(MCC={best_mcc:.4f}) — refitting …"
+    )
+    best_model = _refit_pipeline(
+        pipelines[best_fold],
+        X,
+        y,
+        sample_weight,
+        pct=best_pct,
+        random_state=random_state,
+    )
 
-    if best_pct == 1.0:
-        X_final, y_final, w_final = X, y, sample_weight
-    else:
-        final_index = reduce_dataset(
-            X=X,
-            y=y,
-            target_size=int(best_pct * len(X)),
-            difficulty_model=SVC(
-                kernel="rbf", random_state=random_state, class_weight="balanced"
-            ),
-            stage2_shrink=0.9,
-            class_weight="balanced",
-            random_state=random_state,
-            verbose=False,
-        )
-        X_final = X.loc[final_index]
-        y_final = y.loc[final_index]
-        w_final = sample_weight.loc[final_index]
-
-    try:
-        best_model.fit(X_final, y_final, model__sample_weight=w_final)
-    except Exception:
-        best_model.fit(X_final, y_final)
-
-    return validation_df, best_model
+    return validation, best_model
 
 
 def magic_now(
@@ -796,6 +1016,8 @@ def magic_now(
             header=True,
         )
 
+    per_alg_mode = isinstance(algorithm, list) and hyperparameters == "optimize"
+
     pipelines, studies = train(
         X=X,
         y=y,
@@ -817,13 +1039,21 @@ def magic_now(
         pipelines=pipelines,
         groups=groups,
         n_jobs=n_jobs,
+        algorithms=algorithm if per_alg_mode else None,
     )
 
-    with open(
-        models_dir / f"pipelines{tag}.pkl",
-        "wb",
-    ) as handle:
-        pickle.dump(pipeline, handle)
+    # ------------------------------------------------------------------ #
+    # Persist pipelines                                                    #
+    # Per-algorithm mode: one file per algorithm named pipelines_{alg}.pkl #
+    # Single mode: one file named pipelines.pkl (unchanged)               #
+    # ------------------------------------------------------------------ #
+    if per_alg_mode:
+        for alg, pipe in zip(algorithm, pipeline):
+            with open(models_dir / f"pipelines_{alg}{tag}.pkl", "wb") as handle:
+                pickle.dump(pipe, handle)
+    else:
+        with open(models_dir / f"pipelines{tag}.pkl", "wb") as handle:
+            pickle.dump(pipeline, handle)
 
     with open(
         trials_dir / f"studies{tag}.pkl",
@@ -832,5 +1062,34 @@ def magic_now(
         pickle.dump(studies, handle)
 
     validation.to_csv(results_dir / f"validation{tag}.tsv", sep="\t", index=True)
+
+    # ------------------------------------------------------------------ #
+    # Best hyperparameters per algorithm                                  #
+    # ------------------------------------------------------------------ #
+    if per_alg_mode:
+        best_params_rows = []
+        for alg in algorithm:
+            alg_studies = {k: v for k, v in studies.items() if k.endswith(f"_{alg}")}
+            best_key = max(
+                alg_studies,
+                key=lambda k: (
+                    alg_studies[k].best_value if alg_studies[k].trials else -np.inf
+                ),
+            )
+            best_study = alg_studies[best_key]
+            row = {
+                "algorithm": alg,
+                "fold": best_key,
+                "best_score": best_study.best_value,
+            }
+            row.update(best_study.best_trial.params)
+            best_params_rows.append(row)
+
+        best_params_df = pd.DataFrame(best_params_rows).set_index("algorithm")
+        best_params_df.to_csv(
+            results_dir / f"best_params{tag}.tsv", sep="\t", index=True
+        )
+        print("[magic_now] Best hyperparameters per algorithm:")
+        print(best_params_df.to_string())
 
     return validation, pipeline, studies
