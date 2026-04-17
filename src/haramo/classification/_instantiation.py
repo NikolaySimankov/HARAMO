@@ -417,12 +417,12 @@ def instantiate_model(
         )
 
     kwargs = {
-        "cache_size": 2**9,
+        "cache_size": 2**11,
         "tol": 1e-4,
         "class_weight": "balanced",
         "probability": True,
         "verbose": 0,
-        "max_iter": 2**13,
+        "max_iter": 2**14,
         "random_state": random_state,
         "n_jobs": n_jobs,
     }
