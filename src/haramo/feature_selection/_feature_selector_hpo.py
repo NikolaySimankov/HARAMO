@@ -58,7 +58,7 @@ def _fs_objective(
     task: str,
     scoring,
     random_state: int,
-    groups,
+    inner_cv_groups,
     n_jobs: int,
 ) -> float:
     """
@@ -105,9 +105,9 @@ def _fs_objective(
     else:
         scorer = scoring
 
-    if groups is not None:
+    if inner_cv_groups is not None:
         cv = StratifiedGroupKFold(n_splits=3)
-        splits = list(cv.split(X_train, y_train.astype(str), groups=groups))
+        splits = list(cv.split(X_train, y_train.astype(str), groups=inner_cv_groups))
     else:
         cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=random_state)
         splits = list(cv.split(X_train, y_train.astype(str)))
@@ -148,7 +148,7 @@ def select_best_feature_selector(
     task: str = "classification",
     scoring: Union[str, Callable] = "balanced_accuracy",
     random_state: int = 42,
-    groups=None,
+    inner_cv_groups=None,
     n_jobs: int = 1,
 ) -> Pipeline:
     """
@@ -175,8 +175,8 @@ def select_best_feature_selector(
     scoring : str or callable
         Scorer for the inner 3-fold CV.
     random_state : int
-    groups : array-like, optional
-        Group labels for ``StratifiedGroupKFold``.
+    inner_cv_groups : array-like, optional
+        Group labels for ``StratifiedGroupKFold`` in the inner CV.
     n_jobs : int
         Forwarded to the boruta / random-forest estimators inside the selector.
 
@@ -204,7 +204,7 @@ def select_best_feature_selector(
             task,
             scoring,
             random_state,
-            groups,
+            inner_cv_groups,
             n_jobs,
         ),
         n_trials=n_trials,

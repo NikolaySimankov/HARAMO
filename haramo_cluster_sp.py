@@ -120,14 +120,14 @@ if __name__ == "__main__":
 
     # Load the feature DataFrames
     feature_files = {
-        "ctd": "X_ctd.tsv",
+        # "ctd": "X_ctd.tsv",
         "ctdc": "X_ctdc.tsv",
         "ctdt": "X_ctdt.tsv",
         "ctdd": "X_ctdd.tsv",
-        "aac": "X_aac.tsv",
+        # "aac": "X_aac.tsv",
         "b2b": "X_b2btools.tsv",
         "nsp": "X_netsurfp.tsv",
-        "residue": "X_residue.tsv",
+        # "residue": "X_residue.tsv",
         "biophys": "X_biophys.tsv",
         "class": "X_class.tsv",
     }
@@ -206,7 +206,8 @@ if __name__ == "__main__":
                             magic_now(
                                 X=datasets,
                                 y=y,
-                                groups=groups,
+                                outer_cv_groups=groups,
+                                inner_cv_groups=groups,
                                 scoring=mcc_scorer,
                                 algorithm=["LGBM", "RBFSVM"],
                                 scaler="standard",

@@ -57,7 +57,7 @@ def _score_dataset_combo(
     scoring: Union[str, Callable],
     task: str,
     random_state: int,
-    groups,
+    inner_cv_groups,
 ) -> float:
     """
     Score a single dataset combination via a lightweight 3-fold CV.
@@ -78,9 +78,9 @@ def _score_dataset_combo(
     else:
         scorer = scoring
 
-    if groups is not None:
+    if inner_cv_groups is not None:
         cv = StratifiedGroupKFold(n_splits=4)
-        splits = list(cv.split(X_combo, y.astype(str), groups=groups))
+        splits = list(cv.split(X_combo, y.astype(str), groups=inner_cv_groups))
     else:
         cv = StratifiedKFold(n_splits=4, shuffle=True, random_state=random_state)
         splits = list(cv.split(X_combo, y.astype(str)))
@@ -95,10 +95,7 @@ def _score_dataset_combo(
             X=X_train,
             y=y_train,
             target_size=2000,
-            difficulty_model=SVC(
-                kernel="rbf", random_state=random_state, class_weight="balanced"
-            ),
-            stage2_shrink=0.9,
+            stage2_shrink=1,
             class_weight="balanced",
             random_state=random_state,
             verbose=False,
@@ -121,7 +118,7 @@ def select_best_dataset_combo(
     scoring: Union[str, Callable] = "balanced_accuracy",
     task: str = "classification",
     random_state: int = 42,
-    groups=None,
+    inner_cv_groups=None,
     n_jobs: int = 1,
     beam_width: int = 2,
 ) -> Tuple[str, pd.DataFrame, pd.Series]:
@@ -153,7 +150,7 @@ def select_best_dataset_combo(
     scoring : str or callable, default ``"balanced_accuracy"``
     task : str, default ``"classification"``
     random_state : int, default 42
-    groups : array-like, optional
+    inner_cv_groups : array-like, optional
     n_jobs : int, default 1
         All CPUs used for parallel combo evaluation at each step.
     beam_width : int, default 2
@@ -175,7 +172,7 @@ def select_best_dataset_combo(
 
     def _score_one(combo: tuple) -> tuple:
         X_combo = pd.concat([datasets[name] for name in combo], axis=1)
-        score = _score_dataset_combo(X_combo, y, scoring, task, random_state, groups)
+        score = _score_dataset_combo(X_combo, y, scoring, task, random_state, inner_cv_groups)
         return combo, score
 
     # ------------------------------------------------------------------ #

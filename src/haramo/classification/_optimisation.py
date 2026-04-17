@@ -66,10 +66,7 @@ def _score_fold(
         X=X_train,
         y=y_train,
         target_size=2000,
-        difficulty_model=SVC(
-            kernel="rbf", random_state=random_state, class_weight="balanced"
-        ),
-        stage2_shrink=0.9,
+        stage2_shrink=1,
         class_weight="balanced",
         random_state=random_state,
         verbose=False,
@@ -156,7 +153,7 @@ def objective(
     random_state: int = 42,
     n_cv_jobs: int = 1,
     model_jobs: int = 1,
-    groups: Union[np.ndarray, pd.Series, list] = None,
+    inner_cv_groups: Union[np.ndarray, pd.Series, list] = None,
 ):
     """
     Objective function for hyperparameter optimization using cross-validation.
@@ -180,10 +177,10 @@ def objective(
         Number of parallel jobs for inner cross-validation folds.
     model_jobs : int, default=1
         Number of parallel jobs for the model's native parallelism.
-    groups : Union[np.ndarray, pd.Series, list], optional
-        Group labels for StratifiedGroupKFold. When provided, inner CV
-        ensures no group appears in both train and test, so hyperparameters
-        are optimized for generalization to unseen groups.
+    inner_cv_groups : Union[np.ndarray, pd.Series, list], optional
+        Group labels for StratifiedGroupKFold in the inner CV. When provided,
+        inner CV ensures no group appears in both train and test folds, so
+        hyperparameters are optimized for generalization to unseen groups.
     Returns:
     --------
     float
@@ -201,7 +198,7 @@ def objective(
         n_jobs=model_jobs,
     )
 
-    if groups is not None:
+    if inner_cv_groups is not None:
         strat_kfold_inner = StratifiedGroupKFold(n_splits=3)
     else:
         strat_kfold_inner = StratifiedKFold(
@@ -216,7 +213,7 @@ def objective(
         y=y_train,
         sample_weight=sample_weight,
         scoring=scoring,
-        cv=strat_kfold_inner.split(X_train, y_train.astype("str"), groups=groups),
+        cv=strat_kfold_inner.split(X_train, y_train.astype("str"), groups=inner_cv_groups),
         random_state=random_state,
         n_jobs=n_cv_jobs,
     )
@@ -289,7 +286,7 @@ def _train_fold(
     random_state,
     n_trials,
     n_cv_jobs,
-    groups=None,
+    inner_cv_groups=None,
 ):
     """
     Run two-phase Optuna optimisation for a single outer fold.
@@ -313,11 +310,11 @@ def _train_fold(
     X_train, X_test = X.iloc[train_index], X.iloc[test_index]
     y_train, y_test = y.iloc[train_index], y.iloc[test_index]
     w_train = sample_weight.loc[y_train.index]
-    if groups is not None:
+    if inner_cv_groups is not None:
         groups_s = (
-            groups
-            if isinstance(groups, pd.Series)
-            else pd.Series(groups, index=y.index)
+            inner_cv_groups
+            if isinstance(inner_cv_groups, pd.Series)
+            else pd.Series(inner_cv_groups, index=y.index)
         )
         groups_train = groups_s.iloc[train_index]
     else:
@@ -335,7 +332,7 @@ def _train_fold(
         task=task,
         scoring=scoring,
         random_state=random_state,
-        groups=groups_train,
+        inner_cv_groups=groups_train,
         n_jobs=n_cv_jobs,
     )
     X_train_sel = fs_pipeline.transform(X_train)
@@ -390,7 +387,7 @@ def _train_fold(
             random_state=random_state,
             n_cv_jobs=_inner_jobs,
             model_jobs=_model_jobs,
-            groups=groups_train,
+            inner_cv_groups=groups_train,
         ),
         n_trials=n_trials,
         n_jobs=1,
@@ -431,7 +428,7 @@ def _train_fold_multi_alg(
     n_trials_per_alg,
     n_cv_jobs,
     random_state,
-    groups=None,
+    inner_cv_groups=None,
 ):
     """
     Two-phase optimisation for one outer fold when a list of algorithms is
@@ -452,11 +449,11 @@ def _train_fold_multi_alg(
     y_train, y_test = y.iloc[train_index], y.iloc[test_index]
     w_train = sample_weight.loc[y_train.index]
 
-    if groups is not None:
+    if inner_cv_groups is not None:
         groups_s = (
-            groups
-            if isinstance(groups, pd.Series)
-            else pd.Series(groups, index=y.index)
+            inner_cv_groups
+            if isinstance(inner_cv_groups, pd.Series)
+            else pd.Series(inner_cv_groups, index=y.index)
         )
         groups_train = groups_s.iloc[train_index]
     else:
@@ -472,7 +469,7 @@ def _train_fold_multi_alg(
         task=task,
         scoring=scoring,
         random_state=random_state,
-        groups=groups_train,
+        inner_cv_groups=groups_train,
         n_jobs=n_cv_jobs,
     )
     X_train_sel = fs_pipeline.transform(X_train)
@@ -516,7 +513,7 @@ def _train_fold_multi_alg(
                 random_state=random_state,
                 n_cv_jobs=_inner_jobs,
                 model_jobs=_model_jobs,
-                groups=groups_train,
+                inner_cv_groups=groups_train,
             ),
             n_trials=n_trials_per_alg,
             n_jobs=1,
@@ -551,7 +548,8 @@ def train(
     hyperparameters: str = "optimize",
     random_state: int = 42,
     n_trials: int = 100,
-    groups: Union[np.ndarray, pd.Series, list] = None,
+    outer_cv_groups: Union[np.ndarray, pd.Series, list] = None,
+    inner_cv_groups: Union[np.ndarray, pd.Series, list] = None,
     n_jobs: int = 16,
 ):
     """
@@ -593,7 +591,7 @@ def train(
         index=y.index,
     )
 
-    if groups is not None:
+    if outer_cv_groups is not None:
         strat_kfold_outer = StratifiedGroupKFold(n_splits=4)
     else:
         strat_kfold_outer = StratifiedKFold(
@@ -602,7 +600,7 @@ def train(
             random_state=random_state,
         )
 
-    splits = list(strat_kfold_outer.split(X, y.astype("str"), groups=groups))
+    splits = list(strat_kfold_outer.split(X, y.astype("str"), groups=outer_cv_groups))
     n_outer_folds = len(splits)
     n_cv_jobs = max(1, n_jobs // n_outer_folds)
 
@@ -630,7 +628,7 @@ def train(
                 n_trials_per_alg=n_trials_per_alg,
                 n_cv_jobs=n_cv_jobs,
                 random_state=random_state,
-                groups=groups,
+                inner_cv_groups=inner_cv_groups,
             )
             for fold_idx, (train_index, test_index) in enumerate(splits, start=1)
         )
@@ -654,7 +652,7 @@ def train(
                 random_state=random_state,
                 n_trials=n_trials,
                 n_cv_jobs=n_cv_jobs,
-                groups=groups,
+                inner_cv_groups=inner_cv_groups,
             )
             for fold_idx, (train_index, test_index) in enumerate(splits, start=1)
         )
@@ -714,10 +712,7 @@ def _refit_pipeline(pipeline, X, y, sample_weight, pct=1.0, random_state=42):
             X=X,
             y=y,
             target_size=int(pct * len(X)),
-            difficulty_model=SVC(
-                kernel="rbf", random_state=random_state, class_weight="balanced"
-            ),
-            stage2_shrink=0.9,
+            stage2_shrink=1,
             class_weight="balanced",
             random_state=random_state,
             verbose=False,
@@ -740,7 +735,7 @@ def nested_crossval(
     y: Union[np.ndarray, pd.Series, list],
     pipelines: dict,
     random_state: int = 42,
-    groups: Union[np.ndarray, pd.Series, list] = None,
+    outer_cv_groups: Union[np.ndarray, pd.Series, list] = None,
     n_jobs: int = 16,
     algorithms: Union[list, None] = None,
 ):
@@ -765,7 +760,8 @@ def nested_crossval(
         Mapping key → fitted Pipeline.  Single-algorithm mode: keys are
         ``"fold_{i}"``; per-algorithm mode: ``"fold_{i}_{alg}"``.
     random_state : int, default 42
-    groups : array-like, optional
+    outer_cv_groups : array-like, optional
+        Group labels for the outer StratifiedGroupKFold.
     n_jobs : int, default 16
     algorithms : list of str, optional
         Per-algorithm mode: one best ``(fold, pct)`` is chosen per algorithm
@@ -786,7 +782,7 @@ def nested_crossval(
         index=y.index,
     )
 
-    if groups is not None:
+    if outer_cv_groups is not None:
         strat_kfold_outer = StratifiedGroupKFold(n_splits=4)
     else:
         strat_kfold_outer = StratifiedKFold(
@@ -795,7 +791,7 @@ def nested_crossval(
             random_state=random_state,
         )
 
-    splits = list(strat_kfold_outer.split(X, y.astype("str"), groups=groups))
+    splits = list(strat_kfold_outer.split(X, y.astype("str"), groups=outer_cv_groups))
     n_splits = len(splits)
 
     # ------------------------------------------------------------------ #
@@ -816,75 +812,94 @@ def nested_crossval(
     )
 
     # ------------------------------------------------------------------ #
-    # Pre-compute reduced indices once per (split_idx, pct)               #
+    # Incremental pct loop: parallel over active fold_keys per pct,     #
+    # with early stopping after two consecutive dips below best MCC.    #
     # ------------------------------------------------------------------ #
+    best_mcc_es: dict = {fk: float("-inf") for fk in pipelines}
+    flagged_es: dict  = {fk: False          for fk in pipelines}
+    active_es: dict   = {fk: True           for fk in pipelines}
     reduced_idx: dict = {}
-    for split_idx, (train_index, _) in enumerate(splits):
-        X_train = X.iloc[train_index]
-        y_train = y.iloc[train_index]
-        n_train = len(train_index)
-        for pct in valid_pcts:
-            if pct == 1.0:
-                reduced_idx[(split_idx, pct)] = X_train.index
-            else:
-                reduced_idx[(split_idx, pct)] = reduce_dataset(
-                    X=X_train,
-                    y=y_train,
-                    target_size=int(pct * n_train),
-                    difficulty_model=SVC(
-                        kernel="rbf",
-                        random_state=random_state,
+    pred_store: dict  = {}
+    reports: dict     = {}
+
+    for pct in valid_pcts:
+        active_keys = [fk for fk in pipelines if active_es[fk]]
+        if not active_keys:
+            break
+
+        # Lazy-compute reduced indices for this pct only
+        for split_idx, (train_index, _) in enumerate(splits):
+            if (split_idx, pct) not in reduced_idx:
+                X_train = X.iloc[train_index]
+                y_train = y.iloc[train_index]
+                n_train = len(train_index)
+                if pct == 1.0:
+                    reduced_idx[(split_idx, pct)] = X_train.index
+                else:
+                    reduced_idx[(split_idx, pct)] = reduce_dataset(
+                        X=X_train,
+                        y=y_train,
+                        target_size=int(pct * n_train),
+                        stage2_shrink=1,
                         class_weight="balanced",
-                    ),
-                    stage2_shrink=0.9,
-                    class_weight="balanced",
-                    random_state=random_state,
-                    verbose=False,
-                )
+                        random_state=random_state,
+                        verbose=False,
+                    )
 
-    # ------------------------------------------------------------------ #
-    # Build (fold_key, split_idx, pct) tasks and run in parallel          #
-    # ------------------------------------------------------------------ #
-    task_keys = [
-        (fold_key, split_idx, pct)
-        for fold_key in pipelines
-        for split_idx in range(n_splits)
-        for pct in valid_pcts
-    ]
-
-    results = Parallel(n_jobs=n_jobs)(
-        delayed(_fit_and_predict)(
-            pipelines[fold_key],
-            X,
-            y,
-            sample_weight,
-            splits[split_idx][0],
-            splits[split_idx][1],
-            reduced_idx[(split_idx, pct)],
+        # Parallel over active fold_keys × all splits
+        task_keys_pct = [
+            (fold_key, split_idx)
+            for fold_key in active_keys
+            for split_idx in range(n_splits)
+        ]
+        results_pct = Parallel(n_jobs=n_jobs)(
+            delayed(_fit_and_predict)(
+                pipelines[fold_key],
+                X,
+                y,
+                sample_weight,
+                splits[split_idx][0],
+                splits[split_idx][1],
+                reduced_idx[(split_idx, pct)],
+            )
+            for fold_key, split_idx in task_keys_pct
         )
-        for fold_key, split_idx, pct in task_keys
-    )
+        for (fold_key, split_idx), df in zip(task_keys_pct, results_pct):
+            pred_store[(fold_key, split_idx, pct)] = df
 
-    # ------------------------------------------------------------------ #
-    # Aggregate predictions per (fold_key, pct)                           #
-    # ------------------------------------------------------------------ #
-    pred_store = {
-        (fold_key, split_idx, pct): df
-        for (fold_key, split_idx, pct), df in zip(task_keys, results)
-    }
-
-    reports: dict = {}
-    for fold_key in pipelines:
-        for pct in valid_pcts:
+        # Aggregate and apply early-stopping logic per fold_key
+        for fold_key in active_keys:
             all_preds = pd.concat(
                 [pred_store[(fold_key, si, pct)] for si in range(n_splits)], axis=0
             )
-            reports[(fold_key, pct)] = classification_report(
-                all_preds["true"], all_preds["predicted"]
-            )
+            report = classification_report(all_preds["true"], all_preds["predicted"])
+            reports[(fold_key, pct)] = report
+            mcc = report["MCC"]
+
+            if not flagged_es[fold_key]:
+                if mcc >= best_mcc_es[fold_key]:
+                    best_mcc_es[fold_key] = mcc
+                else:
+                    flagged_es[fold_key] = True
+                    print(
+                        f"[nested_crossval] {fold_key!r} dip at {int(pct * 100)}%"
+                        f" (MCC={mcc:.4f} < best={best_mcc_es[fold_key]:.4f})"
+                        " — giving one more chance …"
+                    )
+            else:
+                if mcc >= best_mcc_es[fold_key]:
+                    flagged_es[fold_key] = False
+                    best_mcc_es[fold_key] = mcc
+                else:
+                    active_es[fold_key] = False
+                    flagged_es[fold_key] = False
+                    print(
+                        f"[nested_crossval] Early stop {fold_key!r} at {int(pct * 100)}%"
+                        f" (MCC={mcc:.4f} < best={best_mcc_es[fold_key]:.4f})"
+                    )
 
     # ------------------------------------------------------------------ #
-    # Per-algorithm mode                                                   #
+    # Per-algorithm mode                                                 #
     # ------------------------------------------------------------------ #
     if algorithms is not None:
         index_tuples, rows = [], []
@@ -963,7 +978,8 @@ def magic_now(
     random_state: int = 42,
     n_trials: int = 100,
     output_dir: Union[str, "PathLike[str]"] = None,
-    groups: Union[np.ndarray, pd.Series, list] = None,
+    outer_cv_groups: Union[np.ndarray, pd.Series, list] = None,
+    inner_cv_groups: Union[np.ndarray, pd.Series, list] = None,
     tag: str = "",
     n_jobs: int = 16,
 ):
@@ -999,7 +1015,7 @@ def magic_now(
             scoring=scoring,
             task=task,
             random_state=random_state,
-            groups=groups,
+            inner_cv_groups=inner_cv_groups,
             n_jobs=n_jobs,
         )
 
@@ -1029,7 +1045,8 @@ def magic_now(
         hyperparameters=hyperparameters,
         random_state=random_state,
         n_trials=n_trials,
-        groups=groups,
+        outer_cv_groups=outer_cv_groups,
+        inner_cv_groups=inner_cv_groups,
         n_jobs=n_jobs,
     )
 
@@ -1037,7 +1054,7 @@ def magic_now(
         X=X,
         y=y,
         pipelines=pipelines,
-        groups=groups,
+        outer_cv_groups=outer_cv_groups,
         n_jobs=n_jobs,
         algorithms=algorithm if per_alg_mode else None,
     )

@@ -25,49 +25,38 @@ from ..utils import TransformerWrapper
 
 def instantiate_standard_scaler(trial: Trial, hyperparameters: str = "optimize"):
     if hyperparameters == "optimize":
-        params = {
-            "with_mean": trial.suggest_categorical("with_mean", [True, False]),
-            "with_std": trial.suggest_categorical("with_std", [True, False]),
-        }
+        pass
     elif hyperparameters == "default":
-        params = {}
+        pass
     else:
         raise ValueError("hyperparameters must be 'optimize' or 'default'")
-    scaler = StandardScaler(**params)
+    scaler = StandardScaler(with_mean=True, with_std=True)
     return TransformerWrapper(scaler)
 
 
 def instantiate_minmax_scaler(trial: Trial, hyperparameters: str = "optimize"):
     if hyperparameters == "optimize":
-        params = {
-            "feature_range": trial.suggest_categorical(
-                "feature_range", [(0, 1), (-1, 1)]
-            ),
-        }
+        pass
     elif hyperparameters == "default":
-        params = {}
+        pass
     else:
         raise ValueError("hyperparameters must be 'optimize' or 'default'")
-    scaler = MinMaxScaler(**params)
+    scaler = MinMaxScaler(feature_range=(0, 1))
     return TransformerWrapper(scaler)
 
 
 def instantiate_robust_scaler(trial: Trial, hyperparameters: str = "optimize"):
     if hyperparameters == "optimize":
         params = {
-            "with_centering": trial.suggest_categorical(
-                "with_centering", [True, False]
-            ),
-            "with_scaling": trial.suggest_categorical("with_scaling", [True, False]),
             "quantile_range": trial.suggest_categorical(
-                "quantile_range", [(25, 75), (2.35, 97.65), (13.5, 86.5)]
+                "quantile_range", [(25, 75), (10, 90), (5, 95)]
             ),
         }
     elif hyperparameters == "default":
         params = {}
     else:
         raise ValueError("hyperparameters must be 'optimize' or 'default'")
-    scaler = RobustScaler(**params)
+    scaler = RobustScaler(**params, with_centering=True, with_scaling=True)
     return TransformerWrapper(scaler)
 
 
