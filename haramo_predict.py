@@ -59,7 +59,7 @@ def get_parser():
 
 
 def _predict_one(protein, target, X_all, prot_ids, taxo, models, results_dir, val_meta):
-    algorithms = ["LGBM", "XGB", "CatB"]
+    algorithms = ["LGBM", "RBFSVM"]
 
     ds_path = results_dir / f"dataset_selection_{protein}_{target}.tsv"
     best_combo = ""

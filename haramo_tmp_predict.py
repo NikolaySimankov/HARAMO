@@ -93,7 +93,7 @@ if __name__ == "__main__":
         # Load data — mirrors haramo_cluster_exsp.py exactly                  #
         # ------------------------------------------------------------------ #
         all_targets = pd.read_csv(
-            data / "Plant_Viruses_host_species.tsv", sep="\t", index_col="Virus_Species"
+            data / "DATABASE_SEED.tsv", sep="\t", index_col="Virus_Species"
         )
         counts = all_targets.apply(sum)
         consistent_targets = counts[counts >= 12].index
