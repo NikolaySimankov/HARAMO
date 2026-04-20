@@ -422,7 +422,7 @@ def instantiate_model(
         "class_weight": "balanced",
         "probability": True,
         "verbose": 0,
-        "max_iter": 2**14,
+        "max_iter": 2**13,
         "random_state": random_state,
         "n_jobs": n_jobs,
     }

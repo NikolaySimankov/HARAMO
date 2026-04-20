@@ -51,6 +51,7 @@ def _score_fold(
     test_index,
     sample_weight: Union[np.ndarray, pd.DataFrame] = None,
     random_state: int = 42,
+    reduced_train_index=None,
 ):
     """Fit a cloned pipeline on one CV fold and return the score."""
     pipe = clone(pipeline)
@@ -62,15 +63,18 @@ def _score_fold(
     X_train, X_test = X.iloc[train_index], X.iloc[test_index]
     y_train, y_test = y.iloc[train_index], y.iloc[test_index]
 
-    reduced_index = reduce_dataset(
-        X=X_train,
-        y=y_train,
-        target_size=2000,
-        stage2_shrink=1,
-        class_weight="balanced",
-        random_state=random_state,
-        verbose=False,
-    )
+    if reduced_train_index is None:
+        reduced_index = reduce_dataset(
+            X=X_train,
+            y=y_train,
+            target_size=2000,
+            stage2_shrink=1,
+            class_weight="balanced",
+            random_state=random_state,
+            verbose=False,
+        )
+    else:
+        reduced_index = reduced_train_index
 
     X_reduced = X_train.loc[reduced_index]
     y_reduced = y_train.loc[reduced_index]
@@ -97,6 +101,7 @@ def pipeline_cross_val(
     sample_weight: Union[np.ndarray, pd.DataFrame] = None,
     random_state: int = 42,
     n_jobs: int = 1,
+    pre_reduced_indices=None,
 ):
     """
     Custom cross-validation function that maintains DataFrame format.
@@ -129,9 +134,10 @@ def pipeline_cross_val(
 
     scores = Parallel(n_jobs=n_jobs)(
         delayed(_score_fold)(
-            pipeline, X, y, scoring, train_idx, test_idx, sample_weight, random_state
+            pipeline, X, y, scoring, train_idx, test_idx, sample_weight, random_state,
+            reduced_train_index=pre_reduced_indices[i] if pre_reduced_indices is not None else None,
         )
-        for train_idx, test_idx in splits
+        for i, (train_idx, test_idx) in enumerate(splits)
     )
 
     return scores
@@ -154,6 +160,8 @@ def objective(
     n_cv_jobs: int = 1,
     model_jobs: int = 1,
     inner_cv_groups: Union[np.ndarray, pd.Series, list] = None,
+    inner_splits=None,
+    inner_reduced_indices=None,
 ):
     """
     Objective function for hyperparameter optimization using cross-validation.
@@ -198,14 +206,16 @@ def objective(
         n_jobs=model_jobs,
     )
 
-    if inner_cv_groups is not None:
-        strat_kfold_inner = StratifiedGroupKFold(n_splits=3)
-    else:
-        strat_kfold_inner = StratifiedKFold(
-            n_splits=3,
-            shuffle=True,
-            random_state=random_state,
+    if inner_splits is not None:
+        cv_iter = inner_splits
+    elif inner_cv_groups is not None:
+        cv_iter = StratifiedGroupKFold(n_splits=3).split(
+            X_train, y_train.astype("str"), groups=inner_cv_groups
         )
+    else:
+        cv_iter = StratifiedKFold(
+            n_splits=3, shuffle=True, random_state=random_state
+        ).split(X_train, y_train.astype("str"))
 
     scores = pipeline_cross_val(
         pipeline,
@@ -213,9 +223,10 @@ def objective(
         y=y_train,
         sample_weight=sample_weight,
         scoring=scoring,
-        cv=strat_kfold_inner.split(X_train, y_train.astype("str"), groups=inner_cv_groups),
+        cv=cv_iter,
         random_state=random_state,
         n_jobs=n_cv_jobs,
+        pre_reduced_indices=inner_reduced_indices,
     )
 
     scores = pd.Series(scores, dtype=object).fillna(0.01).tolist()
@@ -370,6 +381,32 @@ def _train_fold(
         _model_jobs = n_cv_jobs // 3
         _inner_jobs = 3
 
+    # Pre-compute inner CV splits and reduced indices once; reused across all trials
+    if groups_train is not None:
+        _p2_splits = list(
+            StratifiedGroupKFold(n_splits=3).split(
+                X_train_sel, y_train.astype("str"), groups=groups_train
+            )
+        )
+    else:
+        _p2_splits = list(
+            StratifiedKFold(n_splits=3, shuffle=True, random_state=random_state).split(
+                X_train_sel, y_train.astype("str")
+            )
+        )
+    _p2_reduced = [
+        reduce_dataset(
+            X=X_train_sel.iloc[tr],
+            y=y_train.iloc[tr],
+            target_size=2000,
+            stage2_shrink=1,
+            class_weight="balanced",
+            random_state=random_state,
+            verbose=False,
+        )
+        for tr, _ in _p2_splits
+    ]
+
     study.optimize(
         lambda trial: objective(
             trial,
@@ -388,6 +425,8 @@ def _train_fold(
             n_cv_jobs=_inner_jobs,
             model_jobs=_model_jobs,
             inner_cv_groups=groups_train,
+            inner_splits=_p2_splits,
+            inner_reduced_indices=_p2_reduced,
         ),
         n_trials=n_trials,
         n_jobs=1,
@@ -487,6 +526,32 @@ def _train_fold_multi_alg(
     else:
         _model_jobs, _inner_jobs = n_cv_jobs // 3, 3
 
+    # Pre-compute inner CV splits and reduced indices once; shared across all algorithms
+    if groups_train is not None:
+        _p2_splits = list(
+            StratifiedGroupKFold(n_splits=3).split(
+                X_train_sel, y_train.astype("str"), groups=groups_train
+            )
+        )
+    else:
+        _p2_splits = list(
+            StratifiedKFold(n_splits=3, shuffle=True, random_state=random_state).split(
+                X_train_sel, y_train.astype("str")
+            )
+        )
+    _p2_reduced = [
+        reduce_dataset(
+            X=X_train_sel.iloc[tr],
+            y=y_train.iloc[tr],
+            target_size=2000,
+            stage2_shrink=1,
+            class_weight="balanced",
+            random_state=random_state,
+            verbose=False,
+        )
+        for tr, _ in _p2_splits
+    ]
+
     fold_results = []
     for alg in algorithms:
         sampler = TPESampler(seed=random_state, multivariate=True)
@@ -514,6 +579,8 @@ def _train_fold_multi_alg(
                 n_cv_jobs=_inner_jobs,
                 model_jobs=_model_jobs,
                 inner_cv_groups=groups_train,
+                inner_splits=_p2_splits,
+                inner_reduced_indices=_p2_reduced,
             ),
             n_trials=n_trials_per_alg,
             n_jobs=1,
@@ -697,7 +764,9 @@ def _fit_and_predict(
     )
 
 
-def _refit_pipeline(pipeline, X, y, sample_weight, pct=1.0, random_state=42):
+def _refit_pipeline(
+    pipeline, X, y, sample_weight, pct=1.0, random_state=42, max_svm_samples=10_000
+):
     """Refit a cloned pipeline, optionally on a reduced dataset.
 
     Parameters
@@ -705,13 +774,23 @@ def _refit_pipeline(pipeline, X, y, sample_weight, pct=1.0, random_state=42):
     pct : float, default 1.0
         Fraction of rows to use (the winning reduction percentage from
         nested_crossval).  When 1.0 the full dataset is used.
+    max_svm_samples : int, default 10_000
+        Hard cap on training size for kernel SVM pipelines (O(n²) models).
     """
     model = clone(pipeline)
-    if pct < 1.0:
+
+    model_step = model.named_steps.get("model")
+    is_svm = model_step is not None and hasattr(model_step, "kernel")
+
+    target = int(pct * len(X))
+    if is_svm:
+        target = min(target, max_svm_samples)
+
+    if target < len(X):
         final_index = reduce_dataset(
             X=X,
             y=y,
-            target_size=int(pct * len(X)),
+            target_size=target,
             stage2_shrink=1,
             class_weight="balanced",
             random_state=random_state,
@@ -738,6 +817,7 @@ def nested_crossval(
     outer_cv_groups: Union[np.ndarray, pd.Series, list] = None,
     n_jobs: int = 16,
     algorithms: Union[list, None] = None,
+    max_svm_samples: int = 10_000,
 ):
     """
     Perform nested cross-validation jointly optimising over trained model
@@ -806,9 +886,37 @@ def nested_crossval(
     else:
         valid_pcts = [p for p in all_percentages if int(p * min_n_train) >= min_size]
 
+    # Per-fold-key pct list: kernel SVM only tests pcts where
+    # pct × min_n_train ≤ max_svm_samples to avoid O(n²) blowup.
+    fold_key_pcts: dict = {}
+    for fk, pipe in pipelines.items():
+        m = pipe.named_steps.get("model")
+        if m is not None and hasattr(m, "kernel"):
+            svm_pcts = [p for p in valid_pcts if int(p * min_n_train) <= max_svm_samples]
+            if not svm_pcts:
+                # Dataset too large for any standard pct: one custom pct at the cap
+                svm_pcts = [round(max_svm_samples / min_n_train, 4)]
+            fold_key_pcts[fk] = svm_pcts
+            print(
+                f"[nested_crossval] {fk!r} kernel SVM — pcts: "
+                + ", ".join(
+                    f"{int(p * 100)}%" if p in all_percentages else f"{p:.2%}"
+                    for p in svm_pcts
+                )
+                + f" (≤ {max_svm_samples:,} samples)"
+            )
+        else:
+            fold_key_pcts[fk] = valid_pcts
+
+    # Union of all pcts needed by any fold_key, sorted ascending
+    loop_pcts = sorted({p for pcts in fold_key_pcts.values() for p in pcts})
+
     print(
         "[nested_crossval] Reduction sizes: "
-        + ", ".join(f"{int(p * 100)}%" for p in valid_pcts)
+        + ", ".join(
+            f"{int(p * 100)}%" if p in all_percentages else f"{p:.2%}"
+            for p in loop_pcts
+        )
     )
 
     # ------------------------------------------------------------------ #
@@ -822,10 +930,12 @@ def nested_crossval(
     pred_store: dict  = {}
     reports: dict     = {}
 
-    for pct in valid_pcts:
-        active_keys = [fk for fk in pipelines if active_es[fk]]
+    for pct in loop_pcts:
+        active_keys = [fk for fk in pipelines if active_es[fk] and pct in fold_key_pcts[fk]]
         if not active_keys:
-            break
+            if not any(active_es[fk] for fk in pipelines):
+                break   # every fold_key has been early-stopped
+            continue    # some fold_keys still active but not at this pct
 
         # Lazy-compute reduced indices for this pct only
         for split_idx, (train_index, _) in enumerate(splits):
@@ -934,6 +1044,7 @@ def nested_crossval(
                     sample_weight,
                     pct=best_pct,
                     random_state=random_state,
+                    max_svm_samples=max_svm_samples,
                 )
             )
 
@@ -961,6 +1072,7 @@ def nested_crossval(
         sample_weight,
         pct=best_pct,
         random_state=random_state,
+        max_svm_samples=max_svm_samples,
     )
 
     return validation, best_model

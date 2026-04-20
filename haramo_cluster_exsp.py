@@ -1,12 +1,5 @@
 #!/usr/bin/env python
 
-import os
-
-os.environ.setdefault("OMP_NUM_THREADS", "1")
-os.environ.setdefault("MKL_NUM_THREADS", "1")
-os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
-os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
-
 ###########
 # Imports #
 ###########
@@ -117,7 +110,7 @@ if __name__ == "__main__":
 
     # Load the target file into a DataFrame
     all_targets = pd.read_csv(
-        data / "DATABASE_SEED.tsv", sep="\t", index_col="Virus_Species"
+        data / "Plant_Viruses_host_species.tsv", sep="\t", index_col="Virus_Species"
     )
 
     counts = all_targets.apply(sum)
@@ -160,14 +153,16 @@ if __name__ == "__main__":
     proteins = [
         "DNA replication protein",
         "RNA-dependent RNA polymerase",
+        "DNA-RNA polymerase superfamily",
         "Reverse transcriptase",
         "Coat protein",
         "Movement protein",
-        "Transactivator/viroplasmin protein",
+        "Transactivator-Viroplasmin protein",
         "RNA silencing suppressor",
         "Vector transmission protein",
         "RNA-dependent RNA polymerase complex",
         "Reverse transcriptase complex",
+        "Glycoprotein",
     ]
 
     for protein in proteins:
@@ -199,9 +194,9 @@ if __name__ == "__main__":
             sum = targets.apply(lambda x: x.sum(), axis=0).sort_values(ascending=False)
             consistant_targets = sum[sum >= 100].index
 
-            kwargs_heavy = {"cpus": 24, "ram": "16GB", "time": "03:00:00"}
+            kwargs_heavy = {"cpus": 12, "ram": "48GB", "time": "12:00:00"}
 
-            @job(name=f"Optimisation {args.folder}: {protein}_sp100", **kwargs_heavy)
+            @job(name=f"{args.folder}:{protein}_sp100", **kwargs_heavy)
             def optimisation():
 
                 for target in consistant_targets:
@@ -213,28 +208,24 @@ if __name__ == "__main__":
                             magic_now(
                                 X=datasets,
                                 y=y,
-                                outer_cv_groups=groups,
+                                #outer_cv_groups=groups,
                                 inner_cv_groups=groups,
                                 scoring=mcc_scorer,
-                                algorithm=["LGBM", "RBFSVM"],
-                                scaler="standard",
-                                feature_selector="boruta",
+                                algorithm=["LGBM", "XGB", "CatB"],
+                                scaler="robust",
+                                feature_selector="optimize",
                                 hyperparameters="optimize",
                                 n_trials=args.n_trials,
                                 output_dir=output_dir,
                                 tag=f"_{protein}_{target}",
-                                n_jobs=24,
+                                n_jobs=12,
                             )
 
                             with open(log_path, "w") as file:
                                 file.write("done")
 
                     except Exception as e:
-                        with open(log_path, "w") as file:
-                            import traceback
-
-                            file.write(traceback.format_exc())
-                        raise
+                        pass
 
             jobs.append(optimisation)
 

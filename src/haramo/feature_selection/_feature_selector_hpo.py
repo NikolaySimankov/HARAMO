@@ -13,8 +13,6 @@ from sklearn.base import clone
 from sklearn.metrics import get_scorer
 from sklearn.model_selection import StratifiedKFold, StratifiedGroupKFold
 from sklearn.pipeline import Pipeline
-from sklearn.svm import SVC
-
 from ..utils import reduce_dataset
 
 from optuna import create_study
@@ -60,6 +58,8 @@ def _fs_objective(
     random_state: int,
     inner_cv_groups,
     n_jobs: int,
+    inner_splits=None,
+    inner_reduced_indices=None,
 ) -> float:
     """
     Inner-CV objective for phase 1 (feature-selection HPO).
@@ -105,31 +105,39 @@ def _fs_objective(
     else:
         scorer = scoring
 
-    if inner_cv_groups is not None:
-        cv = StratifiedGroupKFold(n_splits=3)
-        splits = list(cv.split(X_train, y_train.astype(str), groups=inner_cv_groups))
+    if inner_splits is not None:
+        splits = inner_splits
+    elif inner_cv_groups is not None:
+        splits = list(
+            StratifiedGroupKFold(n_splits=3).split(
+                X_train, y_train.astype(str), groups=inner_cv_groups
+            )
+        )
     else:
-        cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=random_state)
-        splits = list(cv.split(X_train, y_train.astype(str)))
+        splits = list(
+            StratifiedKFold(n_splits=3, shuffle=True, random_state=random_state).split(
+                X_train, y_train.astype(str)
+            )
+        )
 
     scores = []
-    for train_idx, val_idx in splits:
+    for i, (train_idx, val_idx) in enumerate(splits):
         pipe = clone(pipeline)
         X_tr, X_val = X_train.iloc[train_idx], X_train.iloc[val_idx]
         y_tr, y_val = y_train.iloc[train_idx], y_train.iloc[val_idx]
         try:
-            reduced_index = reduce_dataset(
-                X=X_tr,
-                y=y_tr,
-                target_size=2000,
-                difficulty_model=SVC(
-                    kernel="rbf", random_state=random_state, class_weight="balanced"
-                ),
-                stage2_shrink=0.9,
-                class_weight="balanced",
-                random_state=random_state,
-                verbose=False,
-            )
+            if inner_reduced_indices is not None:
+                reduced_index = inner_reduced_indices[i]
+            else:
+                reduced_index = reduce_dataset(
+                    X=X_tr,
+                    y=y_tr,
+                    target_size=2000,
+                    stage2_shrink=1,
+                    class_weight="balanced",
+                    random_state=random_state,
+                    verbose=False,
+                )
             pipe.fit(X_tr.loc[reduced_index], y_tr.loc[reduced_index])
             scores.append(scorer(pipe, X_val, y_val))
 
@@ -191,6 +199,32 @@ def select_best_feature_selector(
 
     print(f"[FS HPO] {n_trials} trial(s), feature_selector={feature_selector!r} …")
 
+    # Pre-compute inner CV splits and reduced indices once; reused across all FS trials
+    if inner_cv_groups is not None:
+        _fs_splits = list(
+            StratifiedGroupKFold(n_splits=3).split(
+                X_train, y_train.astype("str"), groups=inner_cv_groups
+            )
+        )
+    else:
+        _fs_splits = list(
+            StratifiedKFold(n_splits=3, shuffle=True, random_state=random_state).split(
+                X_train, y_train.astype("str")
+            )
+        )
+    _fs_reduced = [
+        reduce_dataset(
+            X=X_train.iloc[tr],
+            y=y_train.iloc[tr],
+            target_size=2000,
+            stage2_shrink=1,
+            class_weight="balanced",
+            random_state=random_state,
+            verbose=False,
+        )
+        for tr, _ in _fs_splits
+    ]
+
     study = create_study(
         direction="maximize",
         sampler=TPESampler(seed=random_state, multivariate=True),
@@ -206,6 +240,8 @@ def select_best_feature_selector(
             random_state,
             inner_cv_groups,
             n_jobs,
+            inner_splits=_fs_splits,
+            inner_reduced_indices=_fs_reduced,
         ),
         n_trials=n_trials,
         n_jobs=1,  # sequential: all CPUs go to boruta RF inside each trial
