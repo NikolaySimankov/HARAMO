@@ -134,8 +134,17 @@ def pipeline_cross_val(
 
     scores = Parallel(n_jobs=n_jobs)(
         delayed(_score_fold)(
-            pipeline, X, y, scoring, train_idx, test_idx, sample_weight, random_state,
-            reduced_train_index=pre_reduced_indices[i] if pre_reduced_indices is not None else None,
+            pipeline,
+            X,
+            y,
+            scoring,
+            train_idx,
+            test_idx,
+            sample_weight,
+            random_state,
+            reduced_train_index=(
+                pre_reduced_indices[i] if pre_reduced_indices is not None else None
+            ),
         )
         for i, (train_idx, test_idx) in enumerate(splits)
     )
@@ -892,7 +901,9 @@ def nested_crossval(
     for fk, pipe in pipelines.items():
         m = pipe.named_steps.get("model")
         if m is not None and hasattr(m, "kernel"):
-            svm_pcts = [p for p in valid_pcts if int(p * min_n_train) <= max_svm_samples]
+            svm_pcts = [
+                p for p in valid_pcts if int(p * min_n_train) <= max_svm_samples
+            ]
             if not svm_pcts:
                 # Dataset too large for any standard pct: one custom pct at the cap
                 svm_pcts = [round(max_svm_samples / min_n_train, 4)]
@@ -924,18 +935,20 @@ def nested_crossval(
     # with early stopping after two consecutive dips below best MCC.    #
     # ------------------------------------------------------------------ #
     best_mcc_es: dict = {fk: float("-inf") for fk in pipelines}
-    flagged_es: dict  = {fk: False          for fk in pipelines}
-    active_es: dict   = {fk: True           for fk in pipelines}
+    flagged_es: dict = {fk: False for fk in pipelines}
+    active_es: dict = {fk: True for fk in pipelines}
     reduced_idx: dict = {}
-    pred_store: dict  = {}
-    reports: dict     = {}
+    pred_store: dict = {}
+    reports: dict = {}
 
     for pct in loop_pcts:
-        active_keys = [fk for fk in pipelines if active_es[fk] and pct in fold_key_pcts[fk]]
+        active_keys = [
+            fk for fk in pipelines if active_es[fk] and pct in fold_key_pcts[fk]
+        ]
         if not active_keys:
             if not any(active_es[fk] for fk in pipelines):
-                break   # every fold_key has been early-stopped
-            continue    # some fold_keys still active but not at this pct
+                break  # every fold_key has been early-stopped
+            continue  # some fold_keys still active but not at this pct
 
         # Lazy-compute reduced indices for this pct only
         for split_idx, (train_index, _) in enumerate(splits):
@@ -1189,6 +1202,14 @@ def magic_now(
         "wb",
     ) as handle:
         pickle.dump(studies, handle)
+
+    n_1 = int((y == 1).sum())
+    n_0 = int((y == 0).sum())
+    validation["positives"] = n_1
+    validation["negatives"] = n_0
+    validation["class_imbalance"] = round(n_1 / n_0, 4) if n_0 > 0 else float("inf")
+    if outer_cv_groups is not None:
+        validation["n_groups"] = int(pd.Series(outer_cv_groups).nunique())
 
     validation.to_csv(results_dir / f"validation{tag}.tsv", sep="\t", index=True)
 

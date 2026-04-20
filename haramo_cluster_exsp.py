@@ -113,8 +113,8 @@ if __name__ == "__main__":
         data / "Plant_Viruses_host_species.tsv", sep="\t", index_col="Virus_Species"
     )
 
-    counts = all_targets.apply(sum)
-    consistent_targets = counts[counts >= 12].index
+    target_counts = all_targets.apply(sum)
+    consistent_targets = target_counts[target_counts >= 12].index
     all_targets = all_targets[consistent_targets]
     all_targets.reset_index(inplace=True)
 
@@ -191,8 +191,10 @@ if __name__ == "__main__":
 
             groups = intersect.set_index("Prot_ID")["Virus_Species"]
 
-            sum = targets.apply(lambda x: x.sum(), axis=0).sort_values(ascending=False)
-            consistant_targets = sum[sum >= 100].index
+            prot_counts = targets.apply(lambda x: x.sum(), axis=0).sort_values(
+                ascending=False
+            )
+            consistant_targets = prot_counts[prot_counts >= 100].index
 
             kwargs_heavy = {"cpus": 12, "ram": "48GB", "time": "12:00:00"}
 
@@ -208,7 +210,7 @@ if __name__ == "__main__":
                             magic_now(
                                 X=datasets,
                                 y=y,
-                                #outer_cv_groups=groups,
+                                # outer_cv_groups=groups,
                                 inner_cv_groups=groups,
                                 scoring=mcc_scorer,
                                 algorithm=["LGBM", "XGB", "CatB"],

@@ -4,14 +4,12 @@
 # Imports #
 ###########
 
+import numpy as np
 import pandas as pd
 
 from pathlib import Path
 import pickle
 
-from itertools import product
-
-import os
 import re
 import warnings
 
@@ -23,9 +21,10 @@ from argparse import (
     ArgumentParser,
 )
 
+from joblib import Parallel, delayed
+
 from dawgz import (
     job,
-    ensure,
     schedule,
 )
 
@@ -59,8 +58,49 @@ def get_parser():
     return parser
 
 
-def vectors_to_matrix(*vectors):
-    return [list(item) for item in product(*vectors)]
+def _predict_one(protein, target, X_all, prot_ids, taxo, models, results_dir, val_meta):
+    algorithms = ["LGBM", "XGB", "CatB"]
+
+    ds_path = results_dir / f"dataset_selection_{protein}_{target}.tsv"
+    best_combo = ""
+    if ds_path.exists():
+        try:
+            ds_scores = pd.read_csv(ds_path, sep="\t", index_col=0)
+            best_combo = ds_scores.index[0]
+        except Exception:
+            pass
+
+    probas = []
+    for alg in algorithms:
+        pipeline_path = models / f"pipelines_{alg}_{protein}_{target}.pkl"
+        if pipeline_path.exists():
+            with open(pipeline_path, "rb") as handle:
+                pipeline = pickle.load(handle)
+            try:
+                X_pred = X_all[pipeline[-1].feature_names_in_]
+                probas.append(pipeline[-1].predict_proba(X_pred)[:, 1])
+            except Exception:
+                pass
+
+    if not probas:
+        return None
+
+    proba = np.mean(probas, axis=0)
+    meta = val_meta.get((protein, target), {})
+
+    new_predictions = taxo.loc[prot_ids].copy()
+    new_predictions.insert(0, "Target", target)
+    new_predictions.insert(0, "Protein", protein)
+    new_predictions.insert(0, "Best_combo", best_combo)
+    new_predictions.insert(0, "n_groups", meta.get("n_groups", np.nan))
+    new_predictions.insert(0, "class_imbalance", meta.get("class_imbalance", np.nan))
+    new_predictions.insert(0, "negatives", meta.get("negatives", np.nan))
+    new_predictions.insert(0, "positives", meta.get("positives", np.nan))
+    new_predictions.insert(0, "Expected_Selectivity", meta.get("Selectivity", np.nan))
+    new_predictions.insert(0, "Expected_Sensitivity", meta.get("Sensitivity", np.nan))
+    new_predictions.insert(0, "Probability", proba.round(3))
+
+    return new_predictions
 
 
 ########
@@ -86,23 +126,30 @@ if __name__ == "__main__":
     models = output_dir / "models"
     models.mkdir(exist_ok=True)
 
-    kwargs_heavy = {"cpus": 4, "ram": "128GB", "time": "03:00:00"}
+    kwargs_heavy = {"cpus": 12, "ram": "128GB", "time": "03:00:00"}
 
     @job(name=f"Predict {args.folder}", **kwargs_heavy)
     def predict():
 
-        result = pd.DataFrame()
+        # Build (Protein, Target) → validation metadata lookup
+        val_results_path = output_dir / "results" / f"{args.folder}_validation_results.tsv"
+        val_meta = {}
+        if val_results_path.exists():
+            vr = pd.read_csv(val_results_path, sep="\t")
+            for _, row in vr.iterrows():
+                key = (row.get("Protein", ""), row.get("Target", ""))
+                val_meta[key] = row.to_dict()
 
         # Load the target file into a DataFrame
         all_targets = pd.read_csv(
             data / "DATABASE_SEED.tsv", sep="\t", index_col="Virus_Species"
         )
-    
-        counts = all_targets.apply(sum)
-        consistent_targets = counts[counts >= 12].index
+
+        target_counts = all_targets.apply(sum)
+        consistent_targets = target_counts[target_counts >= 12].index
         all_targets = all_targets[consistent_targets]
         all_targets.reset_index(inplace=True)
-    
+
         # Load the feature DataFrames
         feature_files = {
             # "ctd": "X_ctd.tsv",
@@ -116,25 +163,24 @@ if __name__ == "__main__":
             "biophys": "X_biophys.tsv",
             "class": "X_class.tsv",
         }
-    
+
         all_X = {
             name: pd.read_csv(data / fname, sep="\t", index_col="Prot_ID")
             for name, fname in feature_files.items()
         }
-    
+
         # Load the Protein metadata file into a DataFrame
         taxo = pd.read_csv(
             data / "clustered_proteins_V5.2.tsv", sep="\t", index_col="Prot_ID"
         )
-    
+
         # Restrict metadata to proteins present in every feature dataset and with a known name
         common_index = taxo.index
         for X in all_X.values():
             common_index = common_index.intersection(X.index)
         taxo = taxo.loc[common_index]
         taxo = taxo[taxo["Definitive_name"].notna()]
-    
-        # Split comma-separated values and remove duplicates
+
         proteins = [
             "DNA replication protein",
             "RNA-dependent RNA polymerase",
@@ -149,10 +195,10 @@ if __name__ == "__main__":
             "Reverse transcriptase complex",
             "Glycoprotein",
         ]
-    
+
+        # Build list of tasks: one per (protein, target) pair
+        tasks = []
         for protein in proteins:
-    
-            # forbid matches where the phrase is followed by another word (e.g. "... complex")
             pattern = rf"\b{re.escape(protein)}\b(?!\s+\w)"
             biophys = taxo.loc[
                 taxo["Definitive_name"].str.contains(
@@ -160,63 +206,50 @@ if __name__ == "__main__":
                 )
             ]
             biophys = biophys.reset_index()[["Prot_ID", "Virus_Species"]]
-    
-            if len(biophys) >= 500:
-    
-                intersect = pd.merge(biophys, all_targets, how="inner", on="Virus_Species")
-    
-                prot_ids = intersect["Prot_ID"]
-    
-                # Align each feature dataset to the intersected protein IDs; fill all-NaN values by 0
-                datasets = {name: X.loc[prot_ids].fillna(0) for name, X in all_X.items()}
-    
-                targets = intersect[["Prot_ID"] + list(all_targets.columns)]
-                targets.drop(columns=["Virus_Species"], inplace=True)
-                targets.set_index("Prot_ID", inplace=True)
-    
-                groups = intersect.set_index("Prot_ID")["Virus_Species"]
-    
-                counts = targets.apply(lambda x: x.sum(), axis=0).sort_values(ascending=False)
-                consistant_targets = counts[counts >= 100].index
 
-                for target in targets.column:
-                
-                    y = targets[target]
+            if len(biophys) < 500:
+                continue
 
-                    X.dropna(axis=1, inplace=True)
+            intersect = pd.merge(biophys, all_targets, how="inner", on="Virus_Species")
+            prot_ids = intersect["Prot_ID"]
 
-                    # Load the pipeline and get predict_proba
-                    pipeline_path = models / f"pipeline_{protein}_{target}.pkl"
-                    if pipeline_path.exists():
-                        with open(pipeline_path, "rb") as handle:
-                            pipeline = pickle.load(handle)
-                            
-#                        X = X[(pipeline.model.feature_names_in_)]
-#                        new_samples = pd.DataFrame(
-#                            np.column_stack((y, model.predict(X))),
-#                            columns=["true", "predicted"],
-#                            index=y.index,
-#                        )
+            datasets = {name: X.loc[prot_ids].fillna(0) for name, X in all_X.items()}
+            X_all = pd.concat(list(datasets.values()), axis=1)
 
-                        proba = pipeline.predict_proba(X)[:, 1]
-                        
-                        new_predictions = tax.copy()
-                        new_predictions.insert(0, "Seed_Trasmission", target)
-                        new_predictions.insert(0, "Probability", proba.round(3))
+            targets_df = intersect[["Prot_ID"] + list(all_targets.columns)]
+            targets_df.drop(columns=["Virus_Species"], inplace=True)
+            targets_df.set_index("Prot_ID", inplace=True)
 
-                        result = pd.concat([result, new_predictions], sort=False)
-                        result = result[result["Probability"] >= 0.1]
+            prot_counts = targets_df.apply(lambda x: x.sum(), axis=0).sort_values(
+                ascending=False
+            )
+            consistant_targets = prot_counts[prot_counts >= 100].index
 
+            for target in consistant_targets:
+                tasks.append((protein, target, X_all, prot_ids, taxo))
 
-        # Get the remaining columns and sort them
-        predictions = sorted([col for col in result.columns if col not in tax.columns])
-        # Combine the first columns with the sorted remaining columns
-        sorted_columns = list(tax.columns) + predictions
-        # Reorder the DataFrame columns
-        result = result[sorted_columns]
+        # Run all (protein, target) predictions in parallel
+        results_dir = output_dir / "results"
+        frames = Parallel(n_jobs=kwargs_heavy["cpus"])(
+            delayed(_predict_one)(protein, target, X_all, prot_ids, taxo, models, results_dir, val_meta)
+            for protein, target, X_all, prot_ids, taxo in tasks
+        )
+
+        frames = [f for f in frames if f is not None]
+        if not frames:
+            return
+
+        result = pd.concat(frames, sort=False)
+        result = result[result["Probability"] >= 0.1]
+
+        extra_cols = ["Probability", "Best_combo", "Protein", "Target", "Expected_Sensitivity", "Expected_Selectivity", "positives", "negatives", "class_imbalance", "n_groups"]
+        sorted_columns = extra_cols + [c for c in taxo.columns if c not in extra_cols]
+        result = result[[c for c in sorted_columns if c in result.columns]]
         result.sort_values(by=["Virus_Species"], inplace=True)
 
-        result.to_csv(outputs / f"{args.folder}_autoprediction.tsv", sep="\t", index=True)
+        result.to_csv(
+            outputs / f"{args.folder}_autoprediction.tsv", sep="\t", index=True
+        )
 
     schedule(
         predict,
