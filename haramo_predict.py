@@ -58,7 +58,9 @@ def get_parser():
     return parser
 
 
-def _predict_one(protein, target, X_all, prot_ids, taxo, models, results_dir, val_meta):
+def _predict_one(
+    protein, target, X_all, prot_ids, taxo, y_true, models, results_dir, val_meta
+):
     algorithms = ["LGBM", "RBFSVM"]
 
     ds_path = results_dir / f"dataset_selection_{protein}_{target}.tsv"
@@ -88,14 +90,35 @@ def _predict_one(protein, target, X_all, prot_ids, taxo, models, results_dir, va
     proba = np.mean(probas, axis=0)
     meta = val_meta.get((protein, target), {})
 
+    # Fallback: read positives/negatives/class_imbalance/n_groups directly from
+    # the individual validation TSV if they are absent from validation_results.tsv
+    # (e.g. when concat.py was run before the backfill script).
+    if "positives" not in meta:
+        val_path = results_dir / f"validation_{protein}_{target}.tsv"
+        if val_path.exists():
+            try:
+                vdf = pd.read_csv(val_path, sep="\t", nrows=1)
+                for col in ("positives", "negatives", "class_imbalance", "n_groups"):
+                    if col in vdf.columns:
+                        meta[col] = vdf[col].iloc[0]
+            except Exception:
+                pass
+
+    def _m(new, old=None):
+        v = meta.get(new)
+        if v is None or (isinstance(v, float) and np.isnan(v)):
+            v = meta.get(old, np.nan) if old else np.nan
+        return v if v is not None else np.nan
+
     new_predictions = taxo.loc[prot_ids].copy()
+    new_predictions.insert(0, "True_value", y_true.reindex(new_predictions.index))
     new_predictions.insert(0, "Target", target)
     new_predictions.insert(0, "Protein", protein)
     new_predictions.insert(0, "Best_combo", best_combo)
-    new_predictions.insert(0, "n_groups", meta.get("n_groups", np.nan))
-    new_predictions.insert(0, "class_imbalance", meta.get("class_imbalance", np.nan))
-    new_predictions.insert(0, "negatives", meta.get("negatives", np.nan))
-    new_predictions.insert(0, "positives", meta.get("positives", np.nan))
+    new_predictions.insert(0, "n_groups", _m("n_groups"))
+    new_predictions.insert(0, "class_imbalance", _m("class_imbalance", "ratio_1_0"))
+    new_predictions.insert(0, "negatives", _m("negatives", "y_0"))
+    new_predictions.insert(0, "positives", _m("positives", "y_1"))
     new_predictions.insert(0, "Expected_Selectivity", meta.get("Selectivity", np.nan))
     new_predictions.insert(0, "Expected_Sensitivity", meta.get("Sensitivity", np.nan))
     new_predictions.insert(0, "Probability", proba.round(3))
@@ -132,7 +155,9 @@ if __name__ == "__main__":
     def predict():
 
         # Build (Protein, Target) → validation metadata lookup
-        val_results_path = output_dir / "results" / f"{args.folder}_validation_results.tsv"
+        val_results_path = (
+            output_dir / "results" / f"{args.folder}_validation_results.tsv"
+        )
         val_meta = {}
         if val_results_path.exists():
             vr = pd.read_csv(val_results_path, sep="\t")
@@ -226,13 +251,25 @@ if __name__ == "__main__":
             consistant_targets = prot_counts[prot_counts >= 100].index
 
             for target in consistant_targets:
-                tasks.append((protein, target, X_all, prot_ids, taxo))
+                tasks.append(
+                    (protein, target, X_all, prot_ids, taxo, targets_df[target])
+                )
 
         # Run all (protein, target) predictions in parallel
         results_dir = output_dir / "results"
         frames = Parallel(n_jobs=kwargs_heavy["cpus"])(
-            delayed(_predict_one)(protein, target, X_all, prot_ids, taxo, models, results_dir, val_meta)
-            for protein, target, X_all, prot_ids, taxo in tasks
+            delayed(_predict_one)(
+                protein,
+                target,
+                X_all,
+                prot_ids,
+                taxo,
+                y_true,
+                models,
+                results_dir,
+                val_meta,
+            )
+            for protein, target, X_all, prot_ids, taxo, y_true in tasks
         )
 
         frames = [f for f in frames if f is not None]
@@ -240,9 +277,21 @@ if __name__ == "__main__":
             return
 
         result = pd.concat(frames, sort=False)
-        result = result[result["Probability"] >= 0.1]
+        result = result[result["Probability"] >= 0.01]
 
-        extra_cols = ["Probability", "Best_combo", "Protein", "Target", "Expected_Sensitivity", "Expected_Selectivity", "positives", "negatives", "class_imbalance", "n_groups"]
+        extra_cols = [
+            "Probability",
+            "True_value",
+            "Best_combo",
+            "Protein",
+            "Target",
+            "Expected_Sensitivity",
+            "Expected_Selectivity",
+            "positives",
+            "negatives",
+            "class_imbalance",
+            "n_groups",
+        ]
         sorted_columns = extra_cols + [c for c in taxo.columns if c not in extra_cols]
         result = result[[c for c in sorted_columns if c in result.columns]]
         result.sort_values(by=["Virus_Species"], inplace=True)

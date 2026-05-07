@@ -1106,7 +1106,7 @@ def magic_now(
     outer_cv_groups: Union[np.ndarray, pd.Series, list] = None,
     inner_cv_groups: Union[np.ndarray, pd.Series, list] = None,
     tag: str = "",
-    n_jobs: int = 16,
+    n_jobs: int = 12,
 ):
 
     if not output_dir:
@@ -1184,11 +1184,11 @@ def magic_now(
         algorithms=algorithm if per_alg_mode else None,
     )
 
-    # ------------------------------------------------------------------ #
+    # ---------------------------------------------------------------------#
     # Persist pipelines                                                    #
     # Per-algorithm mode: one file per algorithm named pipelines_{alg}.pkl #
-    # Single mode: one file named pipelines.pkl (unchanged)               #
-    # ------------------------------------------------------------------ #
+    # Single mode: one file named pipelines.pkl (unchanged)                #
+    # ---------------------------------------------------------------------#
     if per_alg_mode:
         for alg, pipe in zip(algorithm, pipeline):
             with open(models_dir / f"pipelines_{alg}{tag}.pkl", "wb") as handle:
@@ -1213,9 +1213,9 @@ def magic_now(
 
     validation.to_csv(results_dir / f"validation{tag}.tsv", sep="\t", index=True)
 
-    # ------------------------------------------------------------------ #
-    # Best hyperparameters per algorithm                                  #
-    # ------------------------------------------------------------------ #
+    # ---------------------------------------------------------------------#
+    # Best hyperparameters per algorithm                                   #
+    # ---------------------------------------------------------------------#
     if per_alg_mode:
         best_params_rows = []
         for alg in algorithm:

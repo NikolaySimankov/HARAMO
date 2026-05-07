@@ -110,10 +110,10 @@ if __name__ == "__main__":
 
     # Load the target file into a DataFrame
     all_targets = pd.read_csv(
-        data / "Plant_Viruses_host_species.tsv", sep="\t", index_col="Virus_Species"
+        data / "host_species_confidence.tsv", sep="\t", index_col="Virus_Species"
     )
 
-    target_counts = all_targets.apply(sum)
+    target_counts = all_targets.sum(skipna=True)
     consistent_targets = target_counts[target_counts >= 12].index
     all_targets = all_targets[consistent_targets]
     all_targets.reset_index(inplace=True)
@@ -196,7 +196,7 @@ if __name__ == "__main__":
             )
             consistant_targets = prot_counts[prot_counts >= 100].index
 
-            kwargs_heavy = {"cpus": 12, "ram": "48GB", "time": "12:00:00"}
+            kwargs_heavy = {"cpus": 12, "ram": "48GB", "time": "08:00:00"}
 
             @job(name=f"{args.folder}:{protein}_sp100", **kwargs_heavy)
             def optimisation():
@@ -205,15 +205,19 @@ if __name__ == "__main__":
                     try:
                         log_path = logs / f"{args.folder}_{protein}_{target}.log"
                         if not os.path.exists(log_path):
-                            y = targets[target]
+                            y = targets[target].dropna()
+                            groups = groups.loc[y.index]
+                            datasets = {
+                                name: X.loc[y.index] for name, X in datasets.items()
+                            }
 
                             magic_now(
                                 X=datasets,
                                 y=y,
-                                # outer_cv_groups=groups,
+                                outer_cv_groups=groups,
                                 inner_cv_groups=groups,
                                 scoring=mcc_scorer,
-                                algorithm=["LGBM", "XGB", "CatB"],
+                                algorithm=["LGBM", "XGB"],
                                 scaler="robust",
                                 feature_selector="optimize",
                                 hyperparameters="optimize",

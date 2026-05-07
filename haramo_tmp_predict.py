@@ -53,7 +53,7 @@ def _patch_file(val_path, lookup):
 
     df = pd.read_csv(val_path, sep="\t")
 
-    if "y_1" in df.columns:
+    if "positives" in df.columns and df["positives"].notna().any():
         return f"[already up to date] {val_path.name}"
 
     y, groups = lookup[(protein, target)]
