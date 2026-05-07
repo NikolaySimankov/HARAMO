@@ -27,6 +27,8 @@ dependencies = [
   "plotly==6.0.0",
   "scikit-learn==1.6.1",
   "lightgbm==4.5.0",
+  "xgboost==3.2.0",
+  "catboost==1.2.10",
   "scipy==1.15.1",
   "dawgz==1.0.3",
   "matplotlib==3.10.0",
